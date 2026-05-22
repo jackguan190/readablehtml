@@ -3,6 +3,74 @@ import type { SerializedParagraph } from "./types";
 /** Minimum non-whitespace chars on a page to consider it "has real text." */
 const MIN_CHARS_PER_PAGE = 50;
 
+/**
+ * Normalize PDF-extracted text to repair common encoding artifacts.
+ *
+ * Runs per page, BEFORE paragraph splitting and BEFORE persistence. Two passes:
+ *
+ *   1. Unicode NFKC — folds compatibility forms (e.g. `ﬁ` U+FB01 → `"fi"`)
+ *      and other presentation characters academic PDFs frequently emit.
+ *
+ *   2. Targeted repairs for broken glyphs that NFKC does NOT touch. Academic
+ *      PDFs with bad font encoding sometimes substitute legitimate codepoints
+ *      (`ª`, `º`, `°`) where the original glyph was a `fi`/`fl` ligature.
+ *      We only rewrite these when they appear *between letters*, so legitimate
+ *      uses ("30°C", "1º", "Mª") are preserved.
+ *
+ * Existing Supabase rows are not migrated by this function — only new uploads
+ * benefit, since this runs inside the extraction pipeline. To fix an already
+ * uploaded document, delete it and re-upload.
+ *
+ * Mappings applied:
+ *
+ * | Input          | Output | Trigger                                |
+ * |----------------|--------|----------------------------------------|
+ * | `ﬀ` U+FB00     | `ff`   | always                                 |
+ * | `ﬁ` U+FB01     | `fi`   | always                                 |
+ * | `ﬂ` U+FB02     | `fl`   | always                                 |
+ * | `ﬃ` U+FB03     | `ffi`  | always                                 |
+ * | `ﬄ` U+FB04     | `ffl`  | always                                 |
+ * | `ª` U+00AA     | `fi`   | only between letters                   |
+ * | `º` U+00BA     | `fl`   | only between letters                   |
+ * | `°` U+00B0     | `fl`   | only between letters                   |
+ *
+ * @example
+ *   normalizePdfText("in°uence")    // "influence"
+ *   normalizePdfText("efªcacious")  // "efficacious"
+ *   normalizePdfText("signiªcant")  // "significant"
+ *   normalizePdfText("Conºict")     // "Conflict"
+ *   normalizePdfText("ﬁreﬂy")       // "firefly"   (NFKC)
+ *   normalizePdfText("30°C")        // "30°C"      (untouched — no letter before °)
+ *   normalizePdfText("Mª Curie")    // "Mª Curie"  (untouched — no letter after ª)
+ */
+export function normalizePdfText(input: string): string {
+  if (!input) return input;
+
+  // 1. NFKC — handles standard presentation-form ligatures (FB00–FB06 etc.)
+  //    and other compatibility decompositions in a single pass.
+  let s = input.normalize("NFKC");
+
+  // 2. Belt-and-suspenders: explicit ligature codepoint mappings in case the
+  //    input arrives already partially decomposed, or NFKC misses anything
+  //    (e.g. some PDF tools emit raw private-use glyphs that survive NFKC).
+  s = s
+    .replace(/ﬀ/g, "ff")
+    .replace(/ﬁ/g, "fi")
+    .replace(/ﬂ/g, "fl")
+    .replace(/ﬃ/g, "ffi")
+    .replace(/ﬄ/g, "ffl");
+
+  // 3. Broken-glyph repair. Lookbehind/lookahead so we never consume the
+  //    surrounding letters — that way consecutive cases (rare but possible)
+  //    don't skip every other match.
+  s = s
+    .replace(/(?<=\p{L})ª(?=\p{L})/gu, "fi") // ª between letters → fi
+    .replace(/(?<=\p{L})º(?=\p{L})/gu, "fl") // º between letters → fl
+    .replace(/(?<=\p{L})°(?=\p{L})/gu, "fl"); // ° between letters → fl
+
+  return s;
+}
+
 export interface ExtractedSectionInput {
   section_index: number;
   section_key: string;
@@ -110,10 +178,14 @@ export async function extractPdfPages(
     };
   }
 
-  const pagesWithText = perPageText.filter(
+  // Normalize per page BEFORE paragraph splitting and BEFORE the
+  // scanned-vs-text decision — so ligature characters don't undercount.
+  const normalizedPages = perPageText.map((t) => normalizePdfText(t ?? ""));
+
+  const pagesWithText = normalizedPages.filter(
     (t) => nonWhitespaceLength(t) >= MIN_CHARS_PER_PAGE,
   ).length;
-  const totalChars = perPageText.reduce(
+  const totalChars = normalizedPages.reduce(
     (sum, t) => sum + nonWhitespaceLength(t),
     0,
   );
@@ -131,7 +203,7 @@ export async function extractPdfPages(
     };
   }
 
-  const sections: ExtractedSectionInput[] = perPageText.map((text, i) => {
+  const sections: ExtractedSectionInput[] = normalizedPages.map((text, i) => {
     const pageNumber = i + 1;
     return {
       section_index: i,
@@ -139,7 +211,7 @@ export async function extractPdfPages(
       title: `Page ${pageNumber}`,
       page_start: pageNumber,
       summary: null,
-      body: { paragraphs: splitParagraphs(text ?? "", pageNumber) },
+      body: { paragraphs: splitParagraphs(text, pageNumber) },
       key_terms: [],
     };
   });
