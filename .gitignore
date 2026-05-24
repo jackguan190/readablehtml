@@ -7,3 +7,6 @@ out/
 !.env.example
 next-env.d.ts
 tsconfig.tsbuildinfo
+
+# Local unrelated project
+myrlin-workbook/
