@@ -9,6 +9,71 @@ import type {
 
 export const dynamic = "force-dynamic";
 
+type Supa = ReturnType<typeof createSupabaseServerClient>;
+
+/**
+ * Fetch the document row. Tries the full SELECT first (includes
+ * `processing_mode`); if the schema doesn't have that column yet (migration
+ * 0006 not applied), falls back to the older shape so the page still loads.
+ */
+async function fetchDocument(
+  supabase: Supa,
+  id: string,
+): Promise<DocumentRow | null> {
+  const broad = await supabase
+    .from("documents")
+    .select(
+      "id, user_id, title, storage_path, file_size_bytes, page_count, status, processing_mode, error, created_at, updated_at",
+    )
+    .eq("id", id)
+    .maybeSingle();
+  if (broad.data) return broad.data as DocumentRow;
+  if (broad.error) {
+    const basic = await supabase
+      .from("documents")
+      .select(
+        "id, user_id, title, storage_path, file_size_bytes, page_count, status, error, created_at, updated_at",
+      )
+      .eq("id", id)
+      .maybeSingle();
+    if (basic.data) {
+      return { ...basic.data, processing_mode: null } as DocumentRow;
+    }
+  }
+  return null;
+}
+
+/**
+ * Fetch document pages. Tries with `page_end` first, falls back without if
+ * the column doesn't exist yet.
+ */
+async function fetchPages(
+  supabase: Supa,
+  documentId: string,
+): Promise<DocumentPageRow[]> {
+  const broad = await supabase
+    .from("document_pages")
+    .select(
+      "id, document_id, section_index, section_key, title, page_start, page_end, summary, body, key_terms, created_at",
+    )
+    .eq("document_id", documentId)
+    .order("section_index", { ascending: true });
+  if (broad.data) return broad.data as DocumentPageRow[];
+  if (broad.error) {
+    const basic = await supabase
+      .from("document_pages")
+      .select(
+        "id, document_id, section_index, section_key, title, page_start, summary, body, key_terms, created_at",
+      )
+      .eq("document_id", documentId)
+      .order("section_index", { ascending: true });
+    if (basic.data) {
+      return basic.data.map((r) => ({ ...r, page_end: null })) as DocumentPageRow[];
+    }
+  }
+  return [];
+}
+
 export default async function DocumentPage({
   params,
 }: {
@@ -20,24 +85,11 @@ export default async function DocumentPage({
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: doc } = await supabase
-    .from("documents")
-    .select(
-      "id, user_id, title, storage_path, file_size_bytes, page_count, status, error, created_at, updated_at",
-    )
-    .eq("id", params.id)
-    .maybeSingle();
-
+  const doc = await fetchDocument(supabase, params.id);
   if (!doc) notFound();
 
-  const [{ data: pages }, { data: annotations }] = await Promise.all([
-    supabase
-      .from("document_pages")
-      .select(
-        "id, document_id, section_index, section_key, title, page_start, summary, body, key_terms, created_at",
-      )
-      .eq("document_id", params.id)
-      .order("section_index", { ascending: true }),
+  const [pages, annotationsRes, originalUrl] = await Promise.all([
+    fetchPages(supabase, params.id),
     supabase
       .from("annotations")
       .select(
@@ -45,13 +97,31 @@ export default async function DocumentPage({
       )
       .eq("document_id", params.id)
       .order("created_at", { ascending: false }),
+    signOriginalUrl(supabase, doc.storage_path),
   ]);
 
   return (
     <DocumentClient
-      document={doc as DocumentRow}
-      pages={(pages ?? []) as DocumentPageRow[]}
-      initialAnnotations={(annotations ?? []) as AnnotationRow[]}
+      document={doc}
+      pages={pages}
+      initialAnnotations={(annotationsRes.data ?? []) as AnnotationRow[]}
+      originalUrl={originalUrl}
     />
   );
+}
+
+async function signOriginalUrl(
+  supabase: Supa,
+  storagePath: string | null,
+): Promise<string | null> {
+  if (!storagePath) return null;
+  try {
+    const { data, error } = await supabase.storage
+      .from("documents")
+      .createSignedUrl(storagePath, 60 * 30); // 30 min — refreshes per page load
+    if (error || !data) return null;
+    return data.signedUrl;
+  } catch {
+    return null;
+  }
 }

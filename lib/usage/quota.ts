@@ -10,10 +10,14 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
  */
 export const ALPHA_LIMITS = {
   pdfs: 10,
-  ai: 0,
+  ai: 20,
+  /** Monthly OCR-job allowance. 0 until Chandra (or equivalent) ships. */
+  ocrJobs: 0,
+  /** Per-document page cap for OCR. Enforced in the action layer. */
+  ocrPagesPerDoc: 50,
 } as const;
 
-export type QuotaKind = "pdf_upload" | "ai_action";
+export type QuotaKind = "pdf_upload" | "ai_action" | "ocr_job";
 
 export interface UsageSnapshot {
   periodStart: string; // YYYY-MM-01
@@ -72,11 +76,13 @@ export async function consumeQuota(kind: QuotaKind): Promise<ConsumeResult> {
   if (error) {
     const msg = error.message ?? "";
     if (msg.includes("quota_exceeded")) {
-      return {
-        error: "quota_exceeded",
-        limit:
-          kind === "pdf_upload" ? ALPHA_LIMITS.pdfs : ALPHA_LIMITS.ai,
-      };
+      const limit =
+        kind === "pdf_upload"
+          ? ALPHA_LIMITS.pdfs
+          : kind === "ai_action"
+            ? ALPHA_LIMITS.ai
+            : ALPHA_LIMITS.ocrJobs;
+      return { error: "quota_exceeded", limit };
     }
     if (msg.includes("not_authenticated")) {
       return { error: "not_authenticated" };
@@ -91,5 +97,11 @@ export function quotaExceededMessage(kind: QuotaKind): string {
   if (kind === "pdf_upload") {
     return `Monthly upload limit reached (${ALPHA_LIMITS.pdfs} PDFs/month on the alpha). Paid plans are coming soon — for now, delete an existing document or wait for next month.`;
   }
-  return `AI features are coming soon. Your alpha allowance is ${ALPHA_LIMITS.ai} AI actions/month.`;
+  if (kind === "ai_action") {
+    return `Monthly AI limit reached (${ALPHA_LIMITS.ai} AI actions/month on the alpha). Try again next month or wait for paid plans.`;
+  }
+  // ocr_job
+  return ALPHA_LIMITS.ocrJobs === 0
+    ? "OCR is not yet available on the alpha. OCR integration is coming soon."
+    : `Monthly OCR limit reached (${ALPHA_LIMITS.ocrJobs} OCR jobs/month on the alpha).`;
 }

@@ -1,4 +1,6 @@
 import type { SerializedParagraph } from "./types";
+import type { RawPage } from "./structuring";
+import { extractFootnotes } from "./footnotes";
 
 /** Minimum non-whitespace chars on a page to consider it "has real text." */
 const MIN_CHARS_PER_PAGE = 50;
@@ -83,7 +85,13 @@ export interface ExtractedSectionInput {
 
 export interface ExtractionOutcome {
   kind: "ready" | "needs_ocr" | "failed";
+  /** Per-page-section fallback shape (extraction_only mode). */
   sections: ExtractedSectionInput[];
+  /**
+   * Normalized per-page text. Downstream structuring layers (heuristic /
+   * AI) consume this to build semantic sections.
+   */
+  rawPages: RawPage[];
   pageCount: number;
   totalChars: number;
   warning?: string;
@@ -169,6 +177,7 @@ export async function extractPdfPages(
     return {
       kind: "failed",
       sections: [],
+      rawPages: [],
       pageCount: 0,
       totalChars: 0,
       error:
@@ -192,10 +201,24 @@ export async function extractPdfPages(
 
   // If fewer than half the pages have meaningful text, assume scanned/image PDF.
   const requiredGoodPages = Math.max(1, Math.ceil(totalPages / 2));
+  const rawPages: RawPage[] = normalizedPages.map((text, i) => {
+    const page = i + 1;
+    const fn = extractFootnotes(text, page);
+    return {
+      page,
+      text,
+      mainText: fn.mainText,
+      footnotes: fn.footnotes.length > 0 ? fn.footnotes : undefined,
+      authorNote: fn.authorNote,
+      footnoteDetection: fn.detection,
+    };
+  });
+
   if (totalPages === 0 || pagesWithText < requiredGoodPages) {
     return {
       kind: "needs_ocr",
       sections: [],
+      rawPages,
       pageCount: totalPages,
       totalChars,
       warning:
@@ -219,6 +242,7 @@ export async function extractPdfPages(
   return {
     kind: "ready",
     sections,
+    rawPages,
     pageCount: totalPages,
     totalChars,
   };

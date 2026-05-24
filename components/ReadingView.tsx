@@ -10,6 +10,8 @@ import {
   Hash,
   FileText,
   ExternalLink,
+  NotebookPen,
+  Asterisk,
 } from "lucide-react";
 import { cn, readingMinutes, sectionPageRange, sectionWordCount } from "@/lib/utils";
 import type { Section, Paragraph } from "@/lib/content";
@@ -326,6 +328,9 @@ export function ReadingView({
   activeAnnotationId,
 }: Props) {
   const [glossaryOpen, setGlossaryOpen] = useState(true);
+  const [footnotesOpen, setFootnotesOpen] = useState<boolean>(
+    () => (section.footnotes?.length ?? 0) <= 6,
+  );
   const [selection, setSelection] = useState<CapturedSelection>(null);
   const articleRef = useRef<HTMLElement>(null);
 
@@ -530,6 +535,18 @@ export function ReadingView({
         </div>
       )}
 
+      {!compact && section.authorNote && (
+        <div className="mb-8 pl-0 sm:pl-[58px]">
+          <div className="rounded-xl border border-line bg-paper-raised/60 px-4 py-3 text-[13px] leading-relaxed text-ink-muted">
+            <div className="flex items-center gap-1.5 mb-1">
+              <Asterisk className="h-3 w-3 text-accent" />
+              <span className="eyebrow">Author note</span>
+            </div>
+            <p className="italic">{section.authorNote}</p>
+          </div>
+        </div>
+      )}
+
       <div className="prose-reader">
         {section.paragraphs.map((p) => (
           <ParagraphView
@@ -548,8 +565,52 @@ export function ReadingView({
         ))}
       </div>
 
-      {!compact && section.keyTerms.length > 0 && (
+      {!compact && section.footnotes && section.footnotes.length > 0 && (
         <div className="mt-12 pl-0 sm:pl-[58px]">
+          <div className="rounded-xl border border-line bg-paper-raised overflow-hidden">
+            <button
+              onClick={() => setFootnotesOpen((v) => !v)}
+              className="w-full flex items-center justify-between gap-2 px-4 py-3 hover:bg-paper-sunken/40 transition-colors no-tap-highlight"
+            >
+              <div className="flex items-center gap-1.5">
+                <NotebookPen className="h-3 w-3 text-accent" />
+                <span className="eyebrow text-ink">
+                  Footnotes · {section.footnotes.length}
+                </span>
+              </div>
+              {footnotesOpen ? (
+                <ChevronUp className="h-3.5 w-3.5 text-ink-muted" />
+              ) : (
+                <ChevronDown className="h-3.5 w-3.5 text-ink-muted" />
+              )}
+            </button>
+            {footnotesOpen && (
+              <ol className="px-4 pb-4 pt-1 space-y-2.5 animate-fade-in">
+                {section.footnotes.map((f) => (
+                  <li
+                    id={`fn-${section.id}-${f.number}`}
+                    key={`${f.number}-${f.page}`}
+                    className="grid grid-cols-[auto_1fr] gap-x-3 text-[12.5px] leading-relaxed text-ink-muted"
+                  >
+                    <span className="font-serif font-medium text-accent tabular-nums tracking-tightish pt-0.5">
+                      {f.number}.
+                    </span>
+                    <span>
+                      {f.text}
+                      <span className="ml-2 text-2xs text-ink-faint tabular-nums">
+                        · p. {f.page}
+                      </span>
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        </div>
+      )}
+
+      {!compact && section.keyTerms.length > 0 && (
+        <div className="mt-6 pl-0 sm:pl-[58px]">
           <div className="rounded-xl border border-line bg-paper-raised overflow-hidden">
             <button
               onClick={() => setGlossaryOpen((v) => !v)}

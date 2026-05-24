@@ -1,4 +1,4 @@
-import type { Section, Inline } from "@/lib/content";
+import type { Section, Inline, Footnote } from "@/lib/content";
 
 export type DocumentStatus =
   | "uploaded"
@@ -6,7 +6,17 @@ export type DocumentStatus =
   | "processing"
   | "ready"
   | "failed"
-  | "needs_ocr";
+  | "needs_ocr"
+  // OCR pipeline stub — not active in alpha; runOcrForDocument is a no-op
+  | "ocr_queued"
+  | "ocr_processing"
+  | "ocr_ready"
+  | "ocr_failed";
+
+export type ProcessingMode =
+  | "extraction_only"
+  | "structured"
+  | "ai_structured";
 
 export type AnnotationKind = "highlight" | "note" | "quote" | "glossary" | "ai";
 
@@ -18,9 +28,16 @@ export interface DocumentRow {
   file_size_bytes: number | null;
   page_count: number | null;
   status: DocumentStatus;
+  processing_mode: ProcessingMode | null;
   error: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface DocumentPageBody {
+  paragraphs: SerializedParagraph[];
+  footnotes?: Footnote[];
+  authorNote?: string;
 }
 
 export interface DocumentPageRow {
@@ -30,8 +47,9 @@ export interface DocumentPageRow {
   section_key: string;
   title: string;
   page_start: number | null;
+  page_end: number | null;
   summary: string | null;
-  body: { paragraphs: SerializedParagraph[] };
+  body: DocumentPageBody;
   key_terms: { term: string; def: string }[];
   created_at: string;
 }
@@ -56,7 +74,9 @@ export interface SerializedParagraph {
   inline: Inline[];
 }
 
-export function pageRowToSection(row: DocumentPageRow): Section {
+export function pageRowToSection(row: DocumentPageRow): Section & {
+  pageEnd?: number | null;
+} {
   return {
     id: row.section_key,
     title: row.title,
@@ -64,5 +84,8 @@ export function pageRowToSection(row: DocumentPageRow): Section {
     summary: row.summary ?? "",
     keyTerms: row.key_terms ?? [],
     paragraphs: row.body?.paragraphs ?? [],
+    footnotes: row.body?.footnotes,
+    authorNote: row.body?.authorNote,
+    pageEnd: row.page_end,
   };
 }

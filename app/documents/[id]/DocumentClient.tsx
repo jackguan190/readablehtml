@@ -11,6 +11,9 @@ import {
   CircleCheckBig,
   FileText,
   Info,
+  Sparkles,
+  Wand2,
+  Scan,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Sidebar } from "@/components/Sidebar";
@@ -26,7 +29,11 @@ import {
   deleteAnnotation,
   toggleHighlightAnnotation,
 } from "@/lib/annotations/actions";
-import { deleteDocument } from "@/lib/documents/actions";
+import {
+  deleteDocument,
+  restructureWithAI,
+  restructureWithoutAI,
+} from "@/lib/documents/actions";
 import type {
   AnnotationRow,
   DocumentPageRow,
@@ -39,9 +46,13 @@ interface Props {
   document: DocumentRow;
   pages: DocumentPageRow[];
   initialAnnotations: AnnotationRow[];
+  originalUrl?: string | null;
 }
 
-function describeMode(status: DocumentRow["status"]): {
+function describeMode(
+  status: DocumentRow["status"],
+  processingMode?: DocumentRow["processing_mode"],
+): {
   label: string;
   tone: string;
   modeLabel: string;
@@ -52,7 +63,12 @@ function describeMode(status: DocumentRow["status"]): {
       return {
         label: "Ready",
         tone: "text-emerald-700",
-        modeLabel: "Extracted text",
+        modeLabel:
+          processingMode === "ai_structured"
+            ? "AI-structured"
+            : processingMode === "extraction_only"
+              ? "Per-page extraction"
+              : "Extracted text",
         Icon: CircleCheckBig,
       };
     case "needs_ocr":
@@ -82,6 +98,34 @@ function describeMode(status: DocumentRow["status"]): {
         tone: "text-ink-muted",
         modeLabel: "Waiting to start",
         Icon: FileText,
+      };
+    case "ocr_queued":
+      return {
+        label: "OCR queued",
+        tone: "text-amber-700",
+        modeLabel: "OCR pipeline (beta)",
+        Icon: FileText,
+      };
+    case "ocr_processing":
+      return {
+        label: "OCR running",
+        tone: "text-amber-700",
+        modeLabel: "OCR pipeline (beta)",
+        Icon: Loader2,
+      };
+    case "ocr_ready":
+      return {
+        label: "OCR ready",
+        tone: "text-emerald-700",
+        modeLabel: "OCR completed",
+        Icon: CircleCheckBig,
+      };
+    case "ocr_failed":
+      return {
+        label: "OCR failed",
+        tone: "text-red-700",
+        modeLabel: "OCR error",
+        Icon: CircleAlert,
       };
     default:
       return {
@@ -124,6 +168,7 @@ export function DocumentClient({
   document,
   pages,
   initialAnnotations,
+  originalUrl,
 }: Props) {
   const router = useRouter();
   const sortedPages = useMemo(
@@ -144,6 +189,10 @@ export function DocumentClient({
   const [mobileSheet, setMobileSheet] = useState<"toc" | "notes" | null>(null);
   const [deleting, startDelete] = useTransition();
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [restructuringAi, startRestructureAi] = useTransition();
+  const [restructuringPlain, startRestructurePlain] = useTransition();
+  const [restructureError, setRestructureError] = useState<string | null>(null);
+  const [restructureInfo, setRestructureInfo] = useState<string | null>(null);
   const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(null);
   const notesInputRef = useRef<HTMLTextAreaElement>(null);
   const activeAnnotationTimer = useRef<number | null>(null);
@@ -392,35 +441,182 @@ export function DocumentClient({
     });
   }
 
-  if (sections.length === 0) {
+  function handleRestructureAI() {
+    if (
+      !confirm(
+        "Restructure this document using AI? This uses 1 AI action from your monthly quota and replaces the current sections. Annotations stay in the panel but may lose their in-text highlights.",
+      )
+    )
+      return;
+    setRestructureError(null);
+    setRestructureInfo(null);
+    startRestructureAi(async () => {
+      const res = await restructureWithAI(document.id);
+      if ("error" in res) {
+        setRestructureError(res.error);
+      } else {
+        const fp = res.data.firstPageDetection ?? "none";
+        setRestructureInfo(
+          `AI restructuring complete. Footnote detection: ${fp}`,
+        );
+        router.refresh();
+      }
+    });
+  }
+
+  function handleRestructurePlain() {
+    if (
+      !confirm(
+        "Re-run heuristic structuring on this document? This replaces the current sections — annotations stay in the panel but may lose their in-text highlights. No AI quota is used.",
+      )
+    )
+      return;
+    setRestructureError(null);
+    setRestructureInfo(null);
+    startRestructurePlain(async () => {
+      const res = await restructureWithoutAI(document.id);
+      if ("error" in res) {
+        setRestructureError(res.error);
+      } else {
+        const fp = res.data.firstPageDetection ?? "none";
+        const lead = res.data.headingsDetected
+          ? "Restructured into semantic sections."
+          : "No strong headings detected, using page-based sections.";
+        setRestructureInfo(`${lead} Footnote detection: ${fp}`);
+        router.refresh();
+      }
+    });
+  }
+
+  // Status-first guard: needs_ocr documents must NEVER render document_pages,
+  // even if legacy synthetic rows exist from the pre-2026-05-23 pipeline (when
+  // runBasicPdfProcessing used to seed buildSyntheticPages for scanned PDFs).
+  // We intentionally do NOT delete those legacy rows — the user's annotations
+  // (if any) reference them, and deleting would be unexpected destructive
+  // behavior. Hiding them is the right call until the user explicitly
+  // restructures or re-uploads.
+  if (document.status === "needs_ocr" || sections.length === 0) {
+    const isNeedsOcr = document.status === "needs_ocr";
     return (
       <div className="min-h-screen bg-paper-sunken text-ink grid place-items-center px-4">
-        <div className="max-w-md w-full rounded-2xl border border-line bg-paper p-6 text-center shadow-soft">
-          <CircleAlert className="h-6 w-6 text-accent mx-auto" />
-          <h1 className="mt-2 font-serif text-[20px] tracking-tightish">
-            {document.status === "ready" ? "No content" : "Not ready yet"}
-          </h1>
-          <p className="mt-1 text-[13px] text-ink-muted">
-            {document.status === "failed"
-              ? document.error ?? "Processing failed."
-              : "This document is still being processed. Refresh in a moment."}
-          </p>
-          <Link
-            href="/dashboard"
-            className="inline-flex items-center gap-1.5 mt-4 text-[13px] text-accent hover:underline"
+        <div className="max-w-md w-full rounded-2xl border border-line bg-paper p-6 text-center shadow-lift">
+          <div
+            className={cn(
+              "h-10 w-10 rounded-full grid place-items-center mx-auto",
+              isNeedsOcr ? "bg-amber-100" : "bg-paper-sunken",
+            )}
           >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Back to dashboard
-          </Link>
+            <CircleAlert
+              className={cn(
+                "h-5 w-5",
+                isNeedsOcr ? "text-amber-700" : "text-accent",
+              )}
+            />
+          </div>
+          <h1 className="mt-3 font-serif text-[22px] tracking-tightish">
+            {isNeedsOcr
+              ? "OCR is required for this PDF"
+              : document.status === "ready"
+                ? "No content"
+                : "Not ready yet"}
+          </h1>
+          <p className="mt-2 text-[13.5px] text-ink-muted leading-relaxed">
+            {isNeedsOcr
+              ? "This PDF appears to be scanned or image-based. Text extraction is not available yet. OCR is required."
+              : document.status === "failed"
+                ? document.error ?? "Processing failed."
+                : "This document is still being processed. Refresh in a moment."}
+          </p>
+          <div className="mt-5 flex flex-col items-center gap-2">
+            {isNeedsOcr && originalUrl && (
+              <a
+                href={originalUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 h-9 px-4 rounded-md bg-ink text-paper text-[13px] font-medium hover:bg-ink/90 transition-colors no-tap-highlight"
+              >
+                <FileText className="h-3.5 w-3.5" />
+                View original scan
+              </a>
+            )}
+            {isNeedsOcr && (
+              <div className="mt-2 flex flex-col items-center gap-2">
+                <button
+                  type="button"
+                  disabled
+                  title="Coming soon — OCR integration is in development."
+                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-amber-300 bg-amber-50 text-[12px] font-medium text-amber-800 cursor-not-allowed no-tap-highlight"
+                >
+                  <Scan className="h-3.5 w-3.5" />
+                  Run OCR (beta)
+                  <span className="text-2xs uppercase tracking-eyebrow text-amber-700/80 ml-1">
+                    · soon
+                  </span>
+                </button>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <button
+                    type="button"
+                    disabled
+                    title="OCR is required before structuring."
+                    className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-line bg-paper text-[12px] font-medium text-ink-faint cursor-not-allowed opacity-70 no-tap-highlight"
+                  >
+                    <Wand2 className="h-3.5 w-3.5" />
+                    Restructure
+                  </button>
+                  <button
+                    type="button"
+                    disabled
+                    title="OCR is required before structuring."
+                    className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-line bg-paper text-[12px] font-medium text-ink-faint cursor-not-allowed opacity-70 no-tap-highlight"
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    Restructure with AI
+                  </button>
+                </div>
+              </div>
+            )}
+            <Link
+              href="/dashboard"
+              className="inline-flex items-center gap-1.5 mt-1 text-[13px] text-ink-muted hover:text-ink transition-colors"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" />
+              Back to dashboard
+            </Link>
+          </div>
+          {isNeedsOcr && (
+            <p className="mt-4 text-2xs uppercase tracking-eyebrow text-ink-faint">
+              OCR support is coming soon
+            </p>
+          )}
         </div>
       </div>
     );
   }
 
-  const needsOcr = document.status === "needs_ocr";
+  // needs_ocr is handled by the early-return guard above — nothing below renders for it.
   const isReady = document.status === "ready";
-  const modeMeta = describeMode(document.status);
+  const isAiStructured = document.processing_mode === "ai_structured";
+  const modeMeta = describeMode(document.status, document.processing_mode);
   const pageCount = document.page_count ?? sortedPages.length;
+  const restructuring = restructuringAi || restructuringPlain;
+  // Detect the heuristic's page-fallback shape — every section uses the
+  // `page-N` section_key. Same shape applies to legacy extraction_only docs.
+  const isPageFallback = useMemo(
+    () =>
+      sortedPages.length > 0 &&
+      sortedPages.every((p) => /^page-\d+$/.test(p.section_key)),
+    [sortedPages],
+  );
+  // processing_mode === null means migration 0006 hasn't been applied yet,
+  // or the document predates the column. Surface clearly so the user knows.
+  const processingModeLabel: string =
+    document.processing_mode === "ai_structured"
+      ? "ai_structured"
+      : document.processing_mode === "structured"
+        ? "structured"
+        : document.processing_mode === "extraction_only"
+          ? "extraction_only"
+          : "unknown · run migration 0006";
 
   return (
     <div className="min-h-screen bg-paper-sunken text-ink">
@@ -491,28 +687,107 @@ export function DocumentClient({
         )}
       </header>
 
-      {needsOcr && (
-        <div className="border-b border-amber-200 bg-amber-50/80">
-          <div className="max-w-page mx-auto px-3 sm:px-6 lg:px-8 py-2.5 flex items-start gap-2.5 text-[12.5px] text-amber-900">
-            <CircleAlert className="h-4 w-4 mt-0.5 shrink-0 text-amber-700" />
+      {isReady && (
+        <div className="border-b border-line bg-paper">
+          <div className="max-w-page mx-auto px-3 sm:px-6 lg:px-8 py-2 flex flex-wrap items-center gap-2 sm:gap-3">
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full bg-paper-sunken text-ink-muted px-2 py-0.5 text-[10.5px] uppercase tracking-eyebrow"
+              title="Current processing_mode value from the documents table"
+            >
+              <span className="text-ink-faint">mode</span>
+              <span className="font-mono text-ink tracking-normal normal-case">
+                {processingModeLabel}
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={handleRestructurePlain}
+              disabled={restructuring}
+              title="Re-run paragraphizer + heuristic structuring (no AI quota)"
+              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-line bg-paper text-[12px] font-medium text-ink-muted hover:text-ink hover:border-accent/50 hover:bg-paper-raised disabled:opacity-60 transition-colors no-tap-highlight"
+            >
+              {restructuringPlain ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+              ) : (
+                <Wand2 className="h-3.5 w-3.5 text-accent" />
+              )}
+              <span>
+                {restructuringPlain ? "Restructuring…" : "Restructure"}
+              </span>
+            </button>
+            {!isAiStructured && (
+              <button
+                type="button"
+                onClick={handleRestructureAI}
+                disabled={restructuring}
+                title="Use AI to add section titles, summaries, and key terms (1 AI action)"
+                className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-line bg-paper text-[12px] font-medium text-ink-muted hover:text-ink hover:border-accent/50 hover:bg-paper-raised disabled:opacity-60 transition-colors no-tap-highlight"
+              >
+                {restructuringAi ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5 text-accent" />
+                )}
+                <span>
+                  {restructuringAi ? "AI restructuring…" : "Restructure with AI"}
+                </span>
+              </button>
+            )}
+            {restructureError && (
+              <span className="text-[12px] text-amber-800 truncate max-w-[40ch]">
+                {restructureError}
+              </span>
+            )}
+            {!restructureError && restructureInfo && (
+              <span className="text-[12px] text-emerald-700 truncate max-w-[40ch]">
+                {restructureInfo}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {isReady && isPageFallback && !restructuring && (
+        <div className="border-b border-amber-200 bg-amber-50/60">
+          <div className="max-w-page mx-auto px-3 sm:px-6 lg:px-8 py-2 flex items-start gap-2.5 text-[12.5px] text-amber-900">
+            <Info className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-700" />
             <div className="flex-1">
               <span className="font-medium">
-                This PDF appears scanned.
+                No strong headings detected, using page-based sections.
               </span>{" "}
-              OCR is not implemented yet — showing demo content as a placeholder
-              so you can still test the reading flow.
+              {document.processing_mode === "ai_structured"
+                ? null
+                : "Click Restructure to retry the heuristic, or Restructure with AI to generate section titles, summaries, and key terms."}
             </div>
           </div>
         </div>
       )}
 
+      {/*
+        Removed the legacy "showing demo content as a placeholder" banner —
+        needs_ocr documents now always early-return to the dedicated OCR-required
+        panel above, so this banner is unreachable and the language ("placeholder")
+        was misleading. See feedback-content-authenticity memory.
+      */}
+
       {isReady && (
         <div className="border-b border-line bg-paper-raised">
           <div className="max-w-page mx-auto px-3 sm:px-6 lg:px-8 py-2 flex items-start gap-2.5 text-[12px] text-ink-muted">
-            <Info className="h-3.5 w-3.5 mt-0.5 shrink-0 text-accent" />
-            <div className="flex-1">
-              Extracted from uploaded PDF. Check original for citation accuracy.
-            </div>
+            {isAiStructured ? (
+              <>
+                <Sparkles className="h-3.5 w-3.5 mt-0.5 shrink-0 text-accent" />
+                <div className="flex-1">
+                  AI-structured study page. Check original PDF for citation accuracy.
+                </div>
+              </>
+            ) : (
+              <>
+                <Info className="h-3.5 w-3.5 mt-0.5 shrink-0 text-accent" />
+                <div className="flex-1">
+                  Extracted from uploaded PDF. Check original for citation accuracy.
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

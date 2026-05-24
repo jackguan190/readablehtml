@@ -10,6 +10,12 @@ export type Paragraph = {
   inline: Inline[];
 };
 
+export type Footnote = {
+  number: string;
+  text: string;
+  page: number;
+};
+
 export type Section = {
   id: string;
   title: string;
@@ -17,6 +23,8 @@ export type Section = {
   summary: string;
   keyTerms: { term: string; def: string }[];
   paragraphs: Paragraph[];
+  footnotes?: Footnote[];
+  authorNote?: string;
 };
 
 const t = (text: string): Inline => ({ type: "text", text });

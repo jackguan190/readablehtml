@@ -6,6 +6,30 @@ import { getUsageSnapshot, ALPHA_LIMITS } from "@/lib/usage/quota";
 
 export const dynamic = "force-dynamic";
 
+type Supa = ReturnType<typeof createSupabaseServerClient>;
+
+async function fetchDashboardDocuments(supabase: Supa): Promise<DocumentRow[]> {
+  const broad = await supabase
+    .from("documents")
+    .select(
+      "id, user_id, title, storage_path, file_size_bytes, page_count, status, processing_mode, error, created_at, updated_at",
+    )
+    .order("created_at", { ascending: false });
+  if (broad.data) return broad.data as DocumentRow[];
+  if (broad.error) {
+    const basic = await supabase
+      .from("documents")
+      .select(
+        "id, user_id, title, storage_path, file_size_bytes, page_count, status, error, created_at, updated_at",
+      )
+      .order("created_at", { ascending: false });
+    if (basic.data) {
+      return basic.data.map((d) => ({ ...d, processing_mode: null })) as DocumentRow[];
+    }
+  }
+  return [];
+}
+
 export default async function DashboardPage() {
   const supabase = createSupabaseServerClient();
   const {
@@ -13,13 +37,8 @@ export default async function DashboardPage() {
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const [docsRes, usage] = await Promise.all([
-    supabase
-      .from("documents")
-      .select(
-        "id, user_id, title, storage_path, file_size_bytes, page_count, status, error, created_at, updated_at",
-      )
-      .order("created_at", { ascending: false }),
+  const [documents, usage] = await Promise.all([
+    fetchDashboardDocuments(supabase),
     getUsageSnapshot(),
   ]);
 
@@ -27,7 +46,7 @@ export default async function DashboardPage() {
     <DashboardClient
       userEmail={user.email ?? ""}
       userId={user.id}
-      initialDocuments={(docsRes.data ?? []) as DocumentRow[]}
+      initialDocuments={documents}
       usage={
         usage ?? {
           periodStart: "",

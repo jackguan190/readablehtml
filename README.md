@@ -106,17 +106,44 @@ when `(storage.foldername(name))[1] = auth.uid()::text`.
 ```
 uploaded → queued → processing → ready
                               ↘ failed
+                              ↘ needs_ocr  ──► (OCR pipeline, beta)
+                                                  ↓
+                                       ocr_queued → ocr_processing
+                                                  ↘ ocr_ready
+                                                  ↘ ocr_failed
 ```
 
-Mock processing runs synchronously inside `runMockProcessing()` in
-`lib/documents/actions.ts`. Replace this function with a real worker / queue
-when adding actual OCR.
+Text-extraction processing runs inside `runBasicPdfProcessing()` in
+`lib/documents/actions.ts` using `unpdf`. Documents that look scanned
+land in `needs_ocr` and surface an honest "OCR is required" panel — no
+synthetic content. The OCR branch (`ocr_*` states + `ocr_jobs` table +
+`runOcrForDocument()` in `lib/documents/ocr.ts`) is scaffolded but
+**not active** in the alpha; the "Run OCR (beta)" button is disabled
+until an OCR provider is wired up.
+
+## OCR architecture (stub)
+
+`lib/documents/ocr.ts` exposes `runOcrForDocument(documentId)` — the
+single entry point for the future OCR pipeline. Today it returns an
+error ("OCR is not yet available on the alpha. OCR integration is
+coming soon."). When integrating a provider (Chandra, Tesseract, etc.):
+
+1. Bump `ALPHA_LIMITS.ocrJobs` in `lib/usage/quota.ts` and the matching
+   `consume_quota('ocr_job')` limit in
+   `supabase/migrations/0007_ocr_stub.sql`.
+2. Set the provider's env vars (see `.env.example` `OCR_PROVIDER=…`).
+3. Fill in `runOcrForDocument()` per the contract documented at the
+   top of `lib/documents/ocr.ts`.
+4. Enable the "Run OCR (beta)" button in
+   `app/documents/[id]/DocumentClient.tsx`.
+
+No callers besides that button need to change.
 
 ## What's _not_ in here
 
 This is an **alpha**. Intentionally absent:
 
-- Real OCR (mock processing copies synthetic content)
+- Real OCR (architecture stub only — scanned PDFs surface an honest "OCR required" panel)
 - Public document sharing
 - Payments / billing
 - Team accounts / shared libraries

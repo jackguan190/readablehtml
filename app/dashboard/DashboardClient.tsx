@@ -449,7 +449,10 @@ function DocumentCard({
               <p className="mt-1.5 text-[11.5px] text-red-700">{doc.error}</p>
             )}
           </div>
-          {(doc.status === "ready" || doc.status === "needs_ocr") && (
+          {(doc.status === "ready" ||
+            doc.status === "needs_ocr" ||
+            doc.status === "ocr_ready" ||
+            doc.status === "ocr_failed") && (
             <ArrowRight className="h-4 w-4 text-ink-faint group-hover:text-accent transition-colors mt-1.5" />
           )}
         </div>
@@ -489,6 +492,25 @@ function StatusBadge({ status }: { status: DocumentStatus }) {
       Icon: CircleAlert,
     },
     failed: { label: "Failed", tone: "text-red-700", Icon: CircleAlert },
+    ocr_queued: {
+      label: "OCR queued",
+      tone: "text-amber-700",
+    },
+    ocr_processing: {
+      label: "OCR running",
+      tone: "text-amber-700",
+      Icon: Loader2,
+    },
+    ocr_ready: {
+      label: "OCR ready",
+      tone: "text-emerald-700",
+      Icon: CircleCheckBig,
+    },
+    ocr_failed: {
+      label: "OCR failed",
+      tone: "text-red-700",
+      Icon: CircleAlert,
+    },
   };
   const m = map[status];
   return (
