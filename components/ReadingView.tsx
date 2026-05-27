@@ -15,8 +15,14 @@ import {
   EyeOff,
   Eye,
   Table as TableIcon,
+  X as XIcon,
+  Loader2,
 } from "lucide-react";
 import { cn, readingMinutes, sectionPageRange, sectionWordCount } from "@/lib/utils";
+import { explainParagraphAction } from "@/lib/documents/explain_actions";
+import { llmErrorMessage } from "@/lib/llm/messages";
+import { makeDisplayLabel } from "@/components/AiSettings";
+import type { LlmErrorCode, LlmProviderConfig } from "@/lib/llm/types";
 import type { Section, Paragraph } from "@/lib/content";
 import { AnnotationToolbar } from "./AnnotationToolbar";
 import {
@@ -63,6 +69,10 @@ interface Props {
   activeAnnotationId?: string | null;
   /** Toggle paragraph visibility / mark as header. Optional — wired by DocumentClient. */
   onToggleParagraphHidden?: (paragraphId: string, hidden: boolean) => void;
+  /** Active LLM provider config (passed from DocumentClient session state). */
+  aiProviderConfig?: LlmProviderConfig;
+  /** Document ID — needed for the per-paragraph Explain action. */
+  documentId?: string;
 }
 
 function isTextOnlyParagraph(p: Paragraph): boolean {
@@ -159,6 +169,8 @@ function ParagraphView({
   onMarkClick,
   activeAnnotationId,
   onToggleHidden,
+  aiProviderConfig,
+  documentId,
 }: {
   para: Paragraph;
   activeHighlights: Set<string>;
@@ -171,9 +183,65 @@ function ParagraphView({
   onMarkClick: (id: string) => void;
   activeAnnotationId?: string | null;
   onToggleHidden?: (paragraphId: string, hidden: boolean) => void;
+  aiProviderConfig?: LlmProviderConfig;
+  documentId?: string;
 }) {
   const textOnly = isTextOnlyParagraph(para);
   const fullText = textOnly ? paragraphPlainText(para) : "";
+
+  const [explainState, setExplainState] = useState<
+    | { status: "idle" }
+    | { status: "loading" }
+    | {
+        status: "ok";
+        explanation: string;
+        badge: string;
+      }
+    | { status: "error"; message: string; code?: LlmErrorCode }
+  >({ status: "idle" });
+
+  const canExplain =
+    documentId != null &&
+    para.blockType !== "table" &&
+    para.blockType !== "header_footer" &&
+    para.blockType !== "metadata" &&
+    !para.hidden;
+
+  async function handleExplain() {
+    if (!documentId) return;
+    setExplainState({ status: "loading" });
+    const paragraphText = textOnly
+      ? fullText
+      : (para.caption ?? "").trim() || "";
+    if (paragraphText.length === 0) {
+      setExplainState({
+        status: "error",
+        message: "Nothing to explain in this paragraph.",
+      });
+      return;
+    }
+    const res = await explainParagraphAction({
+      documentId,
+      paragraph: paragraphText,
+      providerConfig: aiProviderConfig,
+    });
+    if ("ok" in res && res.ok) {
+      const badge = makeDisplayLabel(
+        aiProviderConfig ?? { source: "platform" },
+      );
+      setExplainState({
+        status: "ok",
+        explanation: res.data.explanation,
+        badge,
+      });
+    } else if ("error" in res) {
+      setExplainState({
+        status: "error",
+        message: res.code ? llmErrorMessage(res.code, res.error) : res.error,
+        code: res.code,
+      });
+    }
+  }
 
   // Table block — render a distinct card with caption + "View original scan".
   // Scrambled cell text is preserved in para.rawText (not deleted).
@@ -385,6 +453,53 @@ function ParagraphView({
                 })}
           </p>
 
+          {explainState.status === "ok" && (
+            <div
+              role="region"
+              aria-label="AI explanation"
+              className="mt-2 ml-0 sm:ml-[58px] rounded-lg border border-line bg-paper-raised shadow-soft overflow-hidden"
+            >
+              <div className="px-3 py-2 border-b border-line bg-paper-sunken/40 flex items-center justify-between gap-2">
+                <span className="eyebrow inline-flex items-center gap-1.5">
+                  <Sparkles className="h-3 w-3 text-accent" />
+                  Explanation
+                  <span className="ml-1 text-ink-faint normal-case tracking-normal">
+                    · {explainState.badge}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setExplainState({ status: "idle" })}
+                  className="h-6 w-6 grid place-items-center rounded-md text-ink-faint hover:text-ink hover:bg-paper-raised transition-colors"
+                  aria-label="Dismiss explanation"
+                >
+                  <XIcon className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <div className="px-3 py-3 text-[13.5px] leading-relaxed text-ink font-serif">
+                {explainState.explanation}
+              </div>
+            </div>
+          )}
+          {explainState.status === "error" && (
+            <div
+              role="alert"
+              className="mt-2 ml-0 sm:ml-[58px] rounded-lg border border-amber-300/60 bg-amber-50/60 px-3 py-2 text-[12.5px] text-ink"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span>{explainState.message}</span>
+                <button
+                  type="button"
+                  onClick={() => setExplainState({ status: "idle" })}
+                  className="h-6 w-6 grid place-items-center rounded-md text-ink-faint hover:text-ink hover:bg-paper-raised transition-colors -mr-1 -mt-0.5"
+                  aria-label="Dismiss error"
+                >
+                  <XIcon className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
+
           {!compact && (
             <div
               className={cn(
@@ -394,18 +509,22 @@ function ParagraphView({
                   : "opacity-0 group-hover:opacity-100",
               )}
             >
-              <button
-                type="button"
-                disabled
-                title="AI features are coming soon"
-                className="inline-flex items-center gap-1.5 text-[11px] font-medium text-ink-faint cursor-not-allowed no-tap-highlight"
-              >
-                <Sparkles className="h-3 w-3" />
-                Explain paragraph
-                <span className="text-2xs uppercase tracking-eyebrow text-accent">
-                  · soon
-                </span>
-              </button>
+              {canExplain && (
+                <button
+                  type="button"
+                  onClick={handleExplain}
+                  disabled={explainState.status === "loading"}
+                  title="Explain this paragraph"
+                  className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-line bg-paper text-[12px] font-medium text-ink-muted hover:text-ink hover:border-accent/50 hover:bg-paper-raised disabled:opacity-60 disabled:cursor-wait no-tap-highlight"
+                >
+                  {explainState.status === "loading" ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5 text-accent" />
+                  )}
+                  <span className="hidden sm:inline">Explain</span>
+                </button>
+              )}
               {onViewOriginal && para.page && (
                 <button
                   onClick={() => onViewOriginal(para.page)}
@@ -448,6 +567,8 @@ export function ReadingView({
   onSelectAnnotation,
   activeAnnotationId,
   onToggleParagraphHidden,
+  aiProviderConfig,
+  documentId,
 }: Props) {
   const [glossaryOpen, setGlossaryOpen] = useState(true);
   const [footnotesOpen, setFootnotesOpen] = useState<boolean>(
@@ -684,6 +805,8 @@ export function ReadingView({
             onMarkClick={handleMarkClick}
             activeAnnotationId={activeAnnotationId}
             onToggleHidden={onToggleParagraphHidden}
+            aiProviderConfig={aiProviderConfig}
+            documentId={documentId}
           />
         ))}
       </div>
