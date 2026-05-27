@@ -245,6 +245,16 @@ export function DocumentClient({
     [annotations],
   );
 
+  // Detect the heuristic's page-fallback shape — every section uses the
+  // `page-N` section_key. Same shape applies to legacy extraction_only docs.
+  // Must be declared before any early return (Rules of Hooks).
+  const isPageFallback = useMemo(
+    () =>
+      sortedPages.length > 0 &&
+      sortedPages.every((p) => /^page-\d+$/.test(p.section_key)),
+    [sortedPages],
+  );
+
   const activeIndex = useMemo(
     () => sections.findIndex((s) => s.id === activeId),
     [sections, activeId],
@@ -689,14 +699,6 @@ export function DocumentClient({
   const modeMeta = describeMode(document.status, document.processing_mode);
   const pageCount = document.page_count ?? sortedPages.length;
   const restructuring = restructuringAi || restructuringPlain || chandraRunning;
-  // Detect the heuristic's page-fallback shape — every section uses the
-  // `page-N` section_key. Same shape applies to legacy extraction_only docs.
-  const isPageFallback = useMemo(
-    () =>
-      sortedPages.length > 0 &&
-      sortedPages.every((p) => /^page-\d+$/.test(p.section_key)),
-    [sortedPages],
-  );
   // processing_mode === null means migration 0006 hasn't been applied yet,
   // or the document predates the column. Surface clearly so the user knows.
   const processingModeLabel: string =
