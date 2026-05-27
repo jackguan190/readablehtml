@@ -1,6 +1,8 @@
 import type { SerializedParagraph } from "./types";
 import type { RawPage } from "./structuring";
-import { extractFootnotes } from "./footnotes";
+import { insertHeadingBoundaries } from "./structuring";
+import { extractFootnotes, stripFrontMatter } from "./footnotes";
+import { stripRunningHeaders } from "./headers";
 
 /** Minimum non-whitespace chars on a page to consider it "has real text." */
 const MIN_CHARS_PER_PAGE = 50;
@@ -189,7 +191,21 @@ export async function extractPdfPages(
 
   // Normalize per page BEFORE paragraph splitting and BEFORE the
   // scanned-vs-text decision — so ligature characters don't undercount.
-  const normalizedPages = perPageText.map((t) => normalizePdfText(t ?? ""));
+  let normalizedPages = perPageText.map((t) => normalizePdfText(t ?? ""));
+
+  // Strip running headers/footers across pages BEFORE footnote extraction
+  // and structuring. Patterns like "13 MIDDLE POWER FOREIGN POLICY … 279"
+  // shouldn't reach the body / AI prompt.
+  const headerStripped = stripRunningHeaders(
+    normalizedPages.map((text, i) => ({ page: i + 1, text })),
+  );
+  normalizedPages = headerStripped.pages.map((p) => p.text);
+
+  // Recover inline headings (e.g. "… end. What is Gray Zone Conflict? The …")
+  // by inserting paragraph breaks around question-style headings that
+  // extraction collapsed into the middle of a paragraph. Runs per page so
+  // the downstream paragraphizer / heading detector see clean boundaries.
+  normalizedPages = normalizedPages.map((t) => insertHeadingBoundaries(t));
 
   const pagesWithText = normalizedPages.filter(
     (t) => nonWhitespaceLength(t) >= MIN_CHARS_PER_PAGE,
@@ -203,14 +219,42 @@ export async function extractPdfPages(
   const requiredGoodPages = Math.max(1, Math.ceil(totalPages / 2));
   const rawPages: RawPage[] = normalizedPages.map((text, i) => {
     const page = i + 1;
-    const fn = extractFootnotes(text, page);
+
+    // Page 1: peel off chapter title + author block when they precede a
+    // known section heading (Introduction/Abstract/etc.). The title/author
+    // text goes to authorNote; mainText starts at the heading so the
+    // structurer sees a clean entry point and the drop cap lands on the
+    // real first body paragraph.
+    let workingText = text;
+    let frontMatterPart: string | undefined;
+    if (page === 1) {
+      const fm = stripFrontMatter(text);
+      if (fm) {
+        workingText = fm.mainText;
+        frontMatterPart = fm.frontMatter;
+      }
+    }
+
+    const fn = extractFootnotes(workingText, page);
+
+    // Combine front-matter (title + author) with any other detected
+    // author-note text (publication metadata at bottom of page, etc.).
+    const combinedAuthor = [frontMatterPart, fn.authorNote]
+      .filter((p): p is string => !!p && p.trim().length > 0)
+      .join(" · ");
+
     return {
       page,
-      text,
+      text: workingText,
       mainText: fn.mainText,
       footnotes: fn.footnotes.length > 0 ? fn.footnotes : undefined,
-      authorNote: fn.authorNote,
-      footnoteDetection: fn.detection,
+      authorNote: combinedAuthor.length > 0 ? combinedAuthor : undefined,
+      // If front-matter strip applied on page 1, surface that in the debug
+      // label even when downstream detectors also fired — it's the most
+      // page-1-specific signal the reader's toolbar will show.
+      footnoteDetection: frontMatterPart
+        ? "first-page-front-matter"
+        : fn.detection,
     };
   });
 

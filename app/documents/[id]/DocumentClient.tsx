@@ -33,6 +33,8 @@ import {
   deleteDocument,
   restructureWithAI,
   restructureWithoutAI,
+  runChandraForDocument,
+  setParagraphMeta,
 } from "@/lib/documents/actions";
 import type {
   AnnotationRow,
@@ -127,6 +129,34 @@ function describeMode(
         modeLabel: "OCR error",
         Icon: CircleAlert,
       };
+    case "chandra_queued":
+      return {
+        label: "Chandra queued",
+        tone: "text-amber-700",
+        modeLabel: "Chandra (beta)",
+        Icon: FileText,
+      };
+    case "chandra_processing":
+      return {
+        label: "Chandra running",
+        tone: "text-amber-700",
+        modeLabel: "Chandra (beta)",
+        Icon: Loader2,
+      };
+    case "chandra_ready":
+      return {
+        label: "Chandra ready",
+        tone: "text-emerald-700",
+        modeLabel: "Chandra (beta)",
+        Icon: CircleCheckBig,
+      };
+    case "chandra_failed":
+      return {
+        label: "Chandra failed",
+        tone: "text-red-700",
+        modeLabel: "Chandra error",
+        Icon: CircleAlert,
+      };
     default:
       return {
         label: "Uploaded",
@@ -191,6 +221,7 @@ export function DocumentClient({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [restructuringAi, startRestructureAi] = useTransition();
   const [restructuringPlain, startRestructurePlain] = useTransition();
+  const [chandraRunning, startChandra] = useTransition();
   const [restructureError, setRestructureError] = useState<string | null>(null);
   const [restructureInfo, setRestructureInfo] = useState<string | null>(null);
   const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(null);
@@ -308,6 +339,22 @@ export function DocumentClient({
       }
     },
     [activeSection, document.id, document.user_id],
+  );
+
+  const handleToggleParagraphHidden = useCallback(
+    async (paragraphId: string, hidden: boolean) => {
+      if (!activeSection) return;
+      const res = await setParagraphMeta({
+        documentId: document.id,
+        sectionKey: activeSection.id,
+        paragraphId,
+        updates: { hidden },
+      });
+      if ("ok" in res) {
+        router.refresh();
+      }
+    },
+    [activeSection, document.id, router],
   );
 
   const handleSelectAnnotation = useCallback((annotationId: string) => {
@@ -464,6 +511,28 @@ export function DocumentClient({
     });
   }
 
+  function handleRunChandra() {
+    if (
+      !confirm(
+        "Run Chandra (layout-aware OCR) on this document? Uses 1 Chandra job from your monthly quota and replaces the current sections with Chandra's structured output. Existing document_pages remain intact if Chandra fails.",
+      )
+    )
+      return;
+    setRestructureError(null);
+    setRestructureInfo(null);
+    startChandra(async () => {
+      const res = await runChandraForDocument(document.id);
+      if ("error" in res) {
+        setRestructureError(res.error);
+      } else {
+        setRestructureInfo(
+          `Chandra completed: ${res.data.pageCount} pages processed.`,
+        );
+        router.refresh();
+      }
+    });
+  }
+
   function handleRestructurePlain() {
     if (
       !confirm(
@@ -543,16 +612,28 @@ export function DocumentClient({
               <div className="mt-2 flex flex-col items-center gap-2">
                 <button
                   type="button"
-                  disabled
-                  title="Coming soon — OCR integration is in development."
-                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-amber-300 bg-amber-50 text-[12px] font-medium text-amber-800 cursor-not-allowed no-tap-highlight"
+                  onClick={handleRunChandra}
+                  disabled={chandraRunning}
+                  title="Run Chandra (layout-aware OCR) on this scanned PDF (1 Chandra job)"
+                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-amber-300 bg-amber-50 text-[12px] font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-60 transition-colors no-tap-highlight"
                 >
-                  <Scan className="h-3.5 w-3.5" />
-                  Run OCR (beta)
+                  {chandraRunning ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Scan className="h-3.5 w-3.5" />
+                  )}
+                  {chandraRunning
+                    ? "Chandra running…"
+                    : "Run OCR with Chandra"}
                   <span className="text-2xs uppercase tracking-eyebrow text-amber-700/80 ml-1">
-                    · soon
+                    beta
                   </span>
                 </button>
+                {restructureError && (
+                  <p className="max-w-[40ch] text-[12px] text-red-700 mt-1">
+                    {restructureError}
+                  </p>
+                )}
                 <div className="flex flex-wrap items-center justify-center gap-2">
                   <button
                     type="button"
@@ -598,7 +679,7 @@ export function DocumentClient({
   const isAiStructured = document.processing_mode === "ai_structured";
   const modeMeta = describeMode(document.status, document.processing_mode);
   const pageCount = document.page_count ?? sortedPages.length;
-  const restructuring = restructuringAi || restructuringPlain;
+  const restructuring = restructuringAi || restructuringPlain || chandraRunning;
   // Detect the heuristic's page-fallback shape — every section uses the
   // `page-N` section_key. Same shape applies to legacy extraction_only docs.
   const isPageFallback = useMemo(
@@ -733,6 +814,27 @@ export function DocumentClient({
                 </span>
               </button>
             )}
+            <button
+              type="button"
+              onClick={handleRunChandra}
+              disabled={restructuring}
+              title="Use Chandra (layout-aware OCR) to re-parse the PDF with proper tables, headings, and reading order (1 Chandra job)"
+              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-amber-300 bg-amber-50/60 text-[12px] font-medium text-amber-800 hover:bg-amber-50 hover:border-amber-400 disabled:opacity-60 transition-colors no-tap-highlight"
+            >
+              {chandraRunning ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Scan className="h-3.5 w-3.5" />
+              )}
+              <span>
+                {chandraRunning
+                  ? "Chandra running…"
+                  : "Improve layout with Chandra"}
+                <span className="ml-1 text-2xs uppercase tracking-eyebrow text-amber-700/80">
+                  beta
+                </span>
+              </span>
+            </button>
             {restructureError && (
               <span className="text-[12px] text-amber-800 truncate max-w-[40ch]">
                 {restructureError}
@@ -816,6 +918,7 @@ export function DocumentClient({
                     onCreateSelectionAnnotation={handleCreateSelectionAnnotation}
                     onSelectAnnotation={handleSelectAnnotation}
                     activeAnnotationId={activeAnnotationId}
+                    onToggleParagraphHidden={handleToggleParagraphHidden}
                   />
                 )}
                 {mode === "split" && (

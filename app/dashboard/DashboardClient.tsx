@@ -65,6 +65,18 @@ export function DashboardClient({
       setQuotaBlocked(false);
       setStage("uploading");
 
+      // Defensive safety net: if any server hop hangs (network glitch,
+      // edge timeout, etc.) the dropzone must never stay in
+      // uploading/processing forever. Force-clear to idle after 90s
+      // unless the normal finally block has already done so.
+      const safetyTimer = window.setTimeout(() => {
+        setStage((current) =>
+          current === "uploading" || current === "processing"
+            ? "idle"
+            : current,
+        );
+      }, 90_000);
+
       const supabase = createSupabaseBrowserClient();
       const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
       const tmpId =
@@ -73,6 +85,8 @@ export function DashboardClient({
           : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const storagePath = `${userId}/${tmpId}/${safeName}`;
       let didUpload = false;
+      let succeededDocId: string | null = null;
+      let errorMessage: string | null = null;
 
       try {
         const { error: uploadErr } = await supabase.storage
@@ -109,12 +123,30 @@ export function DashboardClient({
         const processRes = await runBasicPdfProcessing(docId);
         if ("error" in processRes) throw new Error(processRes.error);
 
-        router.refresh();
-        router.push(`/documents/${docId}`);
+        // success — note the doc id but DON'T navigate yet; the finally
+        // block clears the dropzone first so card-based status is the
+        // single source of truth.
+        succeededDocId = docId;
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Upload failed.";
-        setUploadError(message);
-        setStage("error");
+        errorMessage = err instanceof Error ? err.message : "Upload failed.";
+      } finally {
+        window.clearTimeout(safetyTimer);
+        if (succeededDocId) {
+          // The new document row exists with status in (uploaded | queued |
+          // processing | ready | needs_ocr). Refresh the dashboard so its
+          // card appears with whatever status the backend ended up in, and
+          // navigate the user to the reading page.
+          setStage("idle");
+          setUploadError(null);
+          router.refresh();
+          router.push(`/documents/${succeededDocId}`);
+        } else {
+          // Failure path — clear the in-flight stages so the dropzone is
+          // never stuck on "Processing…". The "error" stage carries the
+          // message and is a user-clearable state (next upload resets it).
+          setStage("error");
+          setUploadError(errorMessage ?? "Upload failed.");
+        }
       }
     },
     [router, userId],
@@ -452,7 +484,10 @@ function DocumentCard({
           {(doc.status === "ready" ||
             doc.status === "needs_ocr" ||
             doc.status === "ocr_ready" ||
-            doc.status === "ocr_failed") && (
+            doc.status === "ocr_failed" ||
+            doc.status === "chandra_ready" ||
+            doc.status === "chandra_failed" ||
+            doc.status === "chandra_processing") && (
             <ArrowRight className="h-4 w-4 text-ink-faint group-hover:text-accent transition-colors mt-1.5" />
           )}
         </div>
@@ -508,6 +543,25 @@ function StatusBadge({ status }: { status: DocumentStatus }) {
     },
     ocr_failed: {
       label: "OCR failed",
+      tone: "text-red-700",
+      Icon: CircleAlert,
+    },
+    chandra_queued: {
+      label: "Chandra queued",
+      tone: "text-amber-700",
+    },
+    chandra_processing: {
+      label: "Chandra running",
+      tone: "text-amber-700",
+      Icon: Loader2,
+    },
+    chandra_ready: {
+      label: "Chandra ready",
+      tone: "text-emerald-700",
+      Icon: CircleCheckBig,
+    },
+    chandra_failed: {
+      label: "Chandra failed",
       tone: "text-red-700",
       Icon: CircleAlert,
     },

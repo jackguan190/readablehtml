@@ -7,16 +7,22 @@ export type DocumentStatus =
   | "ready"
   | "failed"
   | "needs_ocr"
-  // OCR pipeline stub — not active in alpha; runOcrForDocument is a no-op
+  // OCR pipeline stub — not active in alpha; superseded by chandra_* below
   | "ocr_queued"
   | "ocr_processing"
   | "ocr_ready"
-  | "ocr_failed";
+  | "ocr_failed"
+  // Chandra (layout-aware OCR) pipeline — provider stub today, surface ready
+  | "chandra_queued"
+  | "chandra_processing"
+  | "chandra_ready"
+  | "chandra_failed";
 
 export type ProcessingMode =
   | "extraction_only"
   | "structured"
-  | "ai_structured";
+  | "ai_structured"
+  | "chandra";
 
 export type AnnotationKind = "highlight" | "note" | "quote" | "glossary" | "ai";
 
@@ -72,6 +78,28 @@ export interface SerializedParagraph {
   page?: number;
   dropcap?: boolean;
   inline: Inline[];
+  /** See Paragraph.blockType in lib/content.ts. */
+  blockType?:
+    | "heading"
+    | "body"
+    | "header_footer"
+    | "metadata"
+    | "table"
+    | "figure"
+    | "footnote";
+  /** See Paragraph.hidden in lib/content.ts. */
+  hidden?: boolean;
+  /** See Paragraph.userCorrected in lib/content.ts. */
+  userCorrected?: boolean;
+  // Table-block fields — see Paragraph in lib/content.ts.
+  caption?: string;
+  rawText?: string;
+  confidence?:
+    | "detected_caption_only"
+    | "extracted_rows"
+    | "ai_reconstructed";
+  htmlTable?: string | null;
+  originalScanAvailable?: boolean;
 }
 
 export function pageRowToSection(row: DocumentPageRow): Section & {

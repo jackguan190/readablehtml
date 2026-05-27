@@ -52,7 +52,12 @@ export default async function DashboardPage() {
           periodStart: "",
           pdfsUploaded: 0,
           aiActions: 0,
-          limits: { pdfs: ALPHA_LIMITS.pdfs, ai: ALPHA_LIMITS.ai },
+          chandraJobs: 0,
+          limits: {
+            pdfs: ALPHA_LIMITS.pdfs,
+            ai: ALPHA_LIMITS.ai,
+            chandraJobs: ALPHA_LIMITS.chandraJobs,
+          },
         }
       }
     />

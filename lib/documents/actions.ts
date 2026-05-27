@@ -11,11 +11,15 @@ import {
   type StructuredSectionInput,
 } from "./structuring";
 import { aiStructure } from "./ai_structuring";
+import { getChandraProvider } from "./chandra-provider";
+import { chandraToSections } from "./chandra-mapper";
 import {
+  ALPHA_LIMITS,
   consumeQuota,
   getUsageSnapshot,
   quotaExceededMessage,
 } from "@/lib/usage/quota";
+import type { LlmProviderConfig } from "@/lib/llm/types";
 
 const STORAGE_BUCKET = "documents";
 
@@ -243,11 +247,14 @@ export async function runBasicPdfProcessing(
  */
 export async function restructureWithAI(
   documentId: string,
+  providerConfig?: LlmProviderConfig,
 ): Promise<
   Result<{
     status: ProcessingOutcome;
     mode: ProcessingMode;
     firstPageDetection?: string;
+    providerUsed?: string;
+    modelUsed?: string;
   }> & {
     quotaExceeded?: boolean;
   }
@@ -268,13 +275,18 @@ export async function restructureWithAI(
     };
   }
 
-  // 1. peek quota
-  const snapshot = await getUsageSnapshot();
-  if (snapshot && snapshot.aiActions >= snapshot.limits.ai) {
-    return {
-      error: quotaExceededMessage("ai_action"),
-      quotaExceeded: true,
-    };
+  // BYOK skips platform quota entirely. Platform calls still gate on it.
+  const isByok = providerConfig?.source === "byok";
+
+  // 1. peek platform quota (only when not BYOK)
+  if (!isByok) {
+    const snapshot = await getUsageSnapshot();
+    if (snapshot && snapshot.aiActions >= snapshot.limits.ai) {
+      return {
+        error: quotaExceededMessage("ai_action"),
+        quotaExceeded: true,
+      };
+    }
   }
 
   // 2. re-extract
@@ -293,28 +305,38 @@ export async function restructureWithAI(
   }
 
   // 3. try AI BEFORE any DB mutation — failures leave the document alone
-  const aiOutcome = await aiStructure(outcome.rawPages);
+  const aiOutcome = await aiStructure(outcome.rawPages, providerConfig);
   if (aiOutcome.kind !== "ok") {
     const detail =
       aiOutcome.reason === "no_api_key"
-        ? "AI restructuring is unavailable: OPENAI_API_KEY is not configured on the server."
+        ? "AI restructuring is unavailable: OPENAI_API_KEY is not configured on the server. Bring your own key in AI Settings to use AI features."
         : aiOutcome.reason === "no_text"
           ? "Document has no extractable text for AI to structure."
-          : (aiOutcome.detail ??
-              "AI structuring failed. The document is unchanged.");
+          : aiOutcome.reason === "invalid_key"
+            ? "The provided API key was rejected by the provider. Check the key in AI Settings."
+            : aiOutcome.reason === "rate_limit"
+              ? "The AI provider rate-limited the request. Try again in a moment."
+              : aiOutcome.reason === "unsupported_model"
+                ? "The selected model isn't available on this provider. Pick another in AI Settings."
+                : aiOutcome.reason === "provider_unavailable"
+                  ? "The AI provider is currently unreachable. Try again later."
+                  : (aiOutcome.detail ??
+                      "AI structuring failed. The document is unchanged.");
     return { error: detail };
   }
 
-  // 4. consume quota (now that we know AI succeeded)
-  const consumed = await consumeQuota("ai_action");
-  if ("error" in consumed) {
-    if (consumed.error === "quota_exceeded") {
-      return {
-        error: quotaExceededMessage("ai_action"),
-        quotaExceeded: true,
-      };
+  // 4. consume platform quota (only when not BYOK)
+  if (!isByok) {
+    const consumed = await consumeQuota("ai_action");
+    if ("error" in consumed) {
+      if (consumed.error === "quota_exceeded") {
+        return {
+          error: quotaExceededMessage("ai_action"),
+          quotaExceeded: true,
+        };
+      }
+      return { error: consumed.error };
     }
-    return { error: consumed.error };
   }
 
   // 5. replace document_pages — best-effort
@@ -346,7 +368,13 @@ export async function restructureWithAI(
     outcome.rawPages.find((p) => p.page === 1)?.footnoteDetection ?? "none";
   return {
     ok: true,
-    data: { status: "ready", mode: "ai_structured", firstPageDetection },
+    data: {
+      status: "ready",
+      mode: "ai_structured",
+      firstPageDetection,
+      providerUsed: aiOutcome.providerUsed,
+      modelUsed: aiOutcome.modelUsed,
+    },
   };
 }
 
@@ -441,6 +469,238 @@ export async function restructureWithoutAI(
   };
 }
 
+/**
+ * Run Chandra (layout-aware OCR) on the document and replace its
+ * document_pages with the structured output.
+ *
+ * Fail-safe ordering — existing document_pages stay intact unless the
+ * Chandra call succeeds AND the new rows insert cleanly:
+ *   1. Auth + ownership + page-count cap.
+ *   2. `getChandraProvider().isConfigured()` — bail with a clear error
+ *      ("Chandra is not configured…") when env vars are missing.
+ *   3. Peek quota (read-only). Bail with `quotaExceeded: true` if at cap.
+ *   4. Status → `chandra_queued`; insert `chandra_jobs` row (`queued`).
+ *   5. Re-download PDF from Storage.
+ *   6. Status → `chandra_processing`; chandra_jobs.status → `running`.
+ *   7. Call `provider.convertPdf(buf, ...)`. On error: status →
+ *      `chandra_failed`, chandra_jobs.status → `failed` w/ error string;
+ *      `document_pages` untouched, document still readable.
+ *   8. `consumeQuota("chandra_job")` — race-safe consume.
+ *   9. Map result → sections; delete old `document_pages`; insert new.
+ *  10. Status → `chandra_ready`, `processing_mode = "chandra"`, error cleared.
+ *
+ * Chandra HTTP call itself is currently a documented stub — see
+ * lib/documents/chandra-provider.ts:HttpChandraProvider.convertPdf.
+ */
+export async function runChandraForDocument(
+  documentId: string,
+): Promise<
+  Result<{
+    status: "chandra_ready";
+    mode: "chandra";
+    pageCount: number;
+  }> & { quotaExceeded?: boolean }
+> {
+  const { supabase, user } = await requireUser();
+
+  const { data: doc, error: fetchErr } = await supabase
+    .from("documents")
+    .select("id, user_id, storage_path, status, page_count")
+    .eq("id", documentId)
+    .single();
+  if (fetchErr || !doc) return { error: "Document not found." };
+  if (doc.user_id !== user.id) return { error: "Not authorized." };
+
+  const provider = getChandraProvider();
+  if (!provider.isConfigured()) {
+    return {
+      error:
+        "Chandra is not configured on this deployment. Ask the operator to set CHANDRA_API_KEY (and optionally CHANDRA_API_URL).",
+    };
+  }
+
+  // Page-count cap (alpha protection).
+  const pageCount = doc.page_count ?? 0;
+  if (pageCount > ALPHA_LIMITS.chandraPagesPerDoc) {
+    return {
+      error: `This PDF has ${pageCount} pages; Chandra is capped at ${ALPHA_LIMITS.chandraPagesPerDoc} pages per document on the alpha.`,
+    };
+  }
+
+  // Peek quota.
+  const snapshot = await getUsageSnapshot();
+  if (
+    snapshot &&
+    snapshot.chandraJobs >= snapshot.limits.chandraJobs
+  ) {
+    return {
+      error: quotaExceededMessage("chandra_job"),
+      quotaExceeded: true,
+    };
+  }
+
+  // Open a chandra_jobs row + transition document to chandra_queued.
+  const { data: job } = await supabase
+    .from("chandra_jobs")
+    .insert({
+      document_id: documentId,
+      user_id: user.id,
+      status: "queued",
+      page_count: pageCount,
+      attempts: 1,
+    })
+    .select("id")
+    .single();
+
+  await supabase
+    .from("documents")
+    .update({ status: "chandra_queued", error: null })
+    .eq("id", documentId);
+
+  // Re-download PDF.
+  const { data: fileBlob, error: dlErr } = await supabase.storage
+    .from(STORAGE_BUCKET)
+    .download(doc.storage_path);
+  if (dlErr || !fileBlob) {
+    if (job?.id) {
+      await supabase
+        .from("chandra_jobs")
+        .update({
+          status: "failed",
+          finished_at: new Date().toISOString(),
+          error: dlErr?.message ?? "download_failed",
+        })
+        .eq("id", job.id);
+    }
+    await supabase
+      .from("documents")
+      .update({
+        status: "chandra_failed",
+        error: dlErr?.message ?? "Could not re-read uploaded PDF.",
+      })
+      .eq("id", documentId);
+    return {
+      error: dlErr?.message ?? "Could not re-read uploaded PDF.",
+    };
+  }
+
+  // Mark processing.
+  if (job?.id) {
+    await supabase
+      .from("chandra_jobs")
+      .update({
+        status: "running",
+        started_at: new Date().toISOString(),
+      })
+      .eq("id", job.id);
+  }
+  await supabase
+    .from("documents")
+    .update({ status: "chandra_processing" })
+    .eq("id", documentId);
+
+  // Call the provider. Failure leaves document_pages intact.
+  const buf = new Uint8Array(await fileBlob.arrayBuffer());
+  let result;
+  try {
+    result = await provider.convertPdf(buf, {
+      documentId,
+      pageCount,
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    if (job?.id) {
+      await supabase
+        .from("chandra_jobs")
+        .update({
+          status: "failed",
+          finished_at: new Date().toISOString(),
+          error: detail,
+        })
+        .eq("id", job.id);
+    }
+    await supabase
+      .from("documents")
+      .update({ status: "chandra_failed", error: detail })
+      .eq("id", documentId);
+    revalidatePath(`/documents/${documentId}`);
+    return { error: `Chandra conversion failed: ${detail}` };
+  }
+
+  // Consume quota only on success.
+  const consumed = await consumeQuota("chandra_job");
+  if ("error" in consumed) {
+    if (consumed.error === "quota_exceeded") {
+      // Race lost — revert status to ready (document_pages still intact).
+      await supabase
+        .from("documents")
+        .update({ status: "ready" })
+        .eq("id", documentId);
+      return {
+        error: quotaExceededMessage("chandra_job"),
+        quotaExceeded: true,
+      };
+    }
+    return { error: consumed.error };
+  }
+
+  // Map and replace document_pages.
+  const sections = chandraToSections(result);
+  await supabase.from("document_pages").delete().eq("document_id", documentId);
+  const rows = sections.map(toInsertRow.bind(null, documentId));
+  if (rows.length > 0) {
+    const { error: insertErr } = await supabase
+      .from("document_pages")
+      .insert(rows);
+    if (insertErr) {
+      // Pages were already deleted; surface the error so the user can re-run.
+      await supabase
+        .from("documents")
+        .update({
+          status: "chandra_failed",
+          error: `Chandra succeeded but document_pages insert failed: ${insertErr.message}`,
+        })
+        .eq("id", documentId);
+      return {
+        error: `Chandra succeeded but couldn't save the result: ${insertErr.message}. Try re-running.`,
+      };
+    }
+  }
+
+  if (job?.id) {
+    await supabase
+      .from("chandra_jobs")
+      .update({
+        status: "succeeded",
+        finished_at: new Date().toISOString(),
+        raw_response: result.rawApiResponse ?? null,
+      })
+      .eq("id", job.id);
+  }
+
+  await supabase
+    .from("documents")
+    .update({
+      status: "chandra_ready",
+      processing_mode: "chandra",
+      page_count: result.pageCount || pageCount,
+      error: null,
+    })
+    .eq("id", documentId);
+
+  revalidatePath(`/documents/${documentId}`);
+  revalidatePath("/dashboard");
+
+  return {
+    ok: true,
+    data: {
+      status: "chandra_ready",
+      mode: "chandra",
+      pageCount: result.pageCount,
+    },
+  };
+}
+
 interface DocumentPageInsertRow {
   document_id: string;
   section_index: number;
@@ -517,6 +777,79 @@ async function markFailed(
     .from("documents")
     .update({ status: "failed", error: message })
     .eq("id", documentId);
+}
+
+/**
+ * Update one paragraph's classification (blockType / hidden) in place by
+ * mutating the section's body JSON. No schema change — additive fields on
+ * SerializedParagraph.
+ *
+ * Safety: text is never deleted. `hidden = true` dims/collapses in the UI
+ * but the paragraph's `inline` text stays in the JSON, so "Restore" is a
+ * pure metadata flip.
+ *
+ * Re-running Restructure or Restructure with AI will REPLACE document_pages
+ * from the freshly-extracted PDF and these corrections will be lost. That's
+ * the intentional trade — corrections are post-structuring annotations,
+ * not inputs to the structurer.
+ */
+export async function setParagraphMeta(input: {
+  documentId: string;
+  sectionKey: string;
+  paragraphId: string;
+  updates: {
+    hidden?: boolean;
+    blockType?: "heading" | "body" | "header_footer" | "metadata";
+  };
+}): Promise<Result<true>> {
+  const { supabase, user } = await requireUser();
+
+  // Ownership check via the parent document.
+  const { data: doc, error: docErr } = await supabase
+    .from("documents")
+    .select("id, user_id")
+    .eq("id", input.documentId)
+    .single();
+  if (docErr || !doc) return { error: "Document not found." };
+  if (doc.user_id !== user.id) return { error: "Not authorized." };
+
+  // Fetch the section row, mutate its body JSON, write it back.
+  const { data: page, error: pageErr } = await supabase
+    .from("document_pages")
+    .select("id, body")
+    .eq("document_id", input.documentId)
+    .eq("section_key", input.sectionKey)
+    .single();
+  if (pageErr || !page) return { error: "Section not found." };
+
+  const body = (page.body ?? { paragraphs: [] }) as {
+    paragraphs: Array<Record<string, unknown>>;
+  };
+  const paragraphs = Array.isArray(body.paragraphs) ? body.paragraphs : [];
+  const idx = paragraphs.findIndex((p) => p?.id === input.paragraphId);
+  if (idx < 0) return { error: "Paragraph not found in section." };
+
+  const next = {
+    ...paragraphs[idx],
+    ...(input.updates.hidden !== undefined
+      ? { hidden: input.updates.hidden }
+      : {}),
+    ...(input.updates.blockType !== undefined
+      ? { blockType: input.updates.blockType }
+      : {}),
+    userCorrected: true,
+  };
+  const nextParagraphs = paragraphs.slice();
+  nextParagraphs[idx] = next;
+
+  const { error: updateErr } = await supabase
+    .from("document_pages")
+    .update({ body: { ...body, paragraphs: nextParagraphs } })
+    .eq("id", page.id);
+  if (updateErr) return { error: updateErr.message };
+
+  revalidatePath(`/documents/${input.documentId}`);
+  return { ok: true, data: true };
 }
 
 export async function deleteDocument(documentId: string): Promise<Result<true>> {

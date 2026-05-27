@@ -12,6 +12,9 @@ import {
   ExternalLink,
   NotebookPen,
   Asterisk,
+  EyeOff,
+  Eye,
+  Table as TableIcon,
 } from "lucide-react";
 import { cn, readingMinutes, sectionPageRange, sectionWordCount } from "@/lib/utils";
 import type { Section, Paragraph } from "@/lib/content";
@@ -58,6 +61,8 @@ interface Props {
   onCreateSelectionAnnotation?: (payload: SelectionPayload) => void;
   onSelectAnnotation?: (annotationId: string) => void;
   activeAnnotationId?: string | null;
+  /** Toggle paragraph visibility / mark as header. Optional — wired by DocumentClient. */
+  onToggleParagraphHidden?: (paragraphId: string, hidden: boolean) => void;
 }
 
 function isTextOnlyParagraph(p: Paragraph): boolean {
@@ -153,6 +158,7 @@ function ParagraphView({
   marks,
   onMarkClick,
   activeAnnotationId,
+  onToggleHidden,
 }: {
   para: Paragraph;
   activeHighlights: Set<string>;
@@ -164,9 +170,113 @@ function ParagraphView({
   marks: RenderableMark[];
   onMarkClick: (id: string) => void;
   activeAnnotationId?: string | null;
+  onToggleHidden?: (paragraphId: string, hidden: boolean) => void;
 }) {
   const textOnly = isTextOnlyParagraph(para);
   const fullText = textOnly ? paragraphPlainText(para) : "";
+
+  // Table block — render a distinct card with caption + "View original scan".
+  // Scrambled cell text is preserved in para.rawText (not deleted).
+  if (para.blockType === "table") {
+    return (
+      <div
+        className="group relative my-6 pl-0 sm:pl-[58px]"
+        data-page={para.page}
+      >
+        <div className="rounded-xl border border-line bg-paper-raised shadow-soft overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-line bg-paper-sunken/40 flex items-center gap-2">
+            <TableIcon className="h-3.5 w-3.5 text-accent" />
+            <span className="eyebrow text-ink">
+              Table
+              {para.page != null ? (
+                <span className="ml-2 tabular-nums text-ink-faint normal-case tracking-normal">
+                  · p. {para.page}
+                </span>
+              ) : null}
+            </span>
+          </div>
+          <div className="px-4 pt-3 pb-2">
+            <p className="font-serif text-[15px] tracking-tightish leading-snug text-ink">
+              {para.caption ?? paragraphPlainText(para)}
+            </p>
+            <p className="mt-2 text-[12.5px] text-ink-muted">
+              Table detected. View the original PDF scan for the full data —
+              row/column reconstruction is not yet implemented.
+            </p>
+          </div>
+          <div className="px-4 pb-3 flex flex-wrap items-center gap-2">
+            {onViewOriginal && para.page && (
+              <button
+                type="button"
+                onClick={() => onViewOriginal(para.page)}
+                className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-line bg-paper text-[12px] font-medium text-ink-muted hover:text-ink hover:border-accent/50 hover:bg-paper-raised transition-colors no-tap-highlight"
+              >
+                <FileText className="h-3.5 w-3.5 text-accent" />
+                View original scan
+                <span className="text-ink-faint tabular-nums">
+                  · p. {para.page}
+                </span>
+              </button>
+            )}
+            <button
+              type="button"
+              disabled
+              title="AI table explanation coming soon"
+              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-line bg-paper text-[12px] font-medium text-ink-faint cursor-not-allowed opacity-70 no-tap-highlight"
+            >
+              <Sparkles className="h-3.5 w-3.5 text-accent" />
+              Explain table
+              <span className="text-2xs uppercase tracking-eyebrow text-accent">
+                · soon
+              </span>
+            </button>
+            {onToggleHidden && (
+              <button
+                type="button"
+                onClick={() => onToggleHidden(para.id, true)}
+                title="Hide this table card from the reading view"
+                className="inline-flex items-center gap-1.5 ml-auto text-[11px] font-medium text-ink-muted hover:text-red-700 transition-colors no-tap-highlight"
+              >
+                <EyeOff className="h-3 w-3" />
+                Hide
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Hidden paragraph collapse — text is preserved in JSON; only display changes.
+  if (para.hidden) {
+    return (
+      <div
+        className="group relative my-2 pl-0 sm:pl-[58px]"
+        data-page={para.page}
+      >
+        <div className="rounded-md border border-dashed border-line bg-paper-sunken/40 px-3 py-1.5 flex items-center justify-between gap-3 text-[11.5px] text-ink-faint">
+          <span className="inline-flex items-center gap-1.5">
+            <EyeOff className="h-3 w-3" />
+            <span>
+              Hidden
+              {para.blockType === "header_footer" ? " · page header/footer" : ""}
+              {para.page != null ? ` · p. ${para.page}` : ""}
+            </span>
+          </span>
+          {onToggleHidden && (
+            <button
+              type="button"
+              onClick={() => onToggleHidden(para.id, false)}
+              className="inline-flex items-center gap-1 text-accent hover:underline no-tap-highlight"
+            >
+              <Eye className="h-3 w-3" />
+              Restore
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="group relative" data-page={para.page}>
@@ -307,6 +417,17 @@ function ParagraphView({
                   <span className="text-ink-faint tabular-nums">· p. {para.page}</span>
                 </button>
               )}
+              {onToggleHidden && (
+                <button
+                  type="button"
+                  onClick={() => onToggleHidden(para.id, true)}
+                  title="Hide from reading body (text is preserved; you can restore it)"
+                  className="inline-flex items-center gap-1.5 text-[11px] font-medium text-ink-muted hover:text-red-700 transition-colors no-tap-highlight"
+                >
+                  <EyeOff className="h-3 w-3" />
+                  Hide
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -326,6 +447,7 @@ export function ReadingView({
   onCreateSelectionAnnotation,
   onSelectAnnotation,
   activeAnnotationId,
+  onToggleParagraphHidden,
 }: Props) {
   const [glossaryOpen, setGlossaryOpen] = useState(true);
   const [footnotesOpen, setFootnotesOpen] = useState<boolean>(
@@ -561,6 +683,7 @@ export function ReadingView({
             marks={marksByParagraph.get(p.id) ?? []}
             onMarkClick={handleMarkClick}
             activeAnnotationId={activeAnnotationId}
+            onToggleHidden={onToggleParagraphHidden}
           />
         ))}
       </div>

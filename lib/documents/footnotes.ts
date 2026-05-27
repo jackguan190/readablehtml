@@ -42,15 +42,19 @@ export interface FootnoteExtractionResult {
   authorNote?: string;
   /**
    * Internal/debug label for which strategy fired:
-   *   - "divider"                          → `_______` line above notes
-   *   - "trailing-numbered"                → ≥2 sequential numbered notes in page tail
-   *   - "first-page-author-note"           → page 1, author-note pattern, no footnote(s)
-   *   - "single-footnote-after-author-note"→ page 1, author note(s) + ≥1 numbered note
-   *   - "none"                             → nothing detected, text stays in main body
+   *   - "divider"                            → `_______` line above notes
+   *   - "trailing-numbered"                  → ≥2 sequential numbered notes in page tail
+   *   - "first-page-front-matter"            → page 1, title/author block before a known section heading
+   *   - "first-page-publication-metadata"    → page 1, ≥2 metadata signals (©, e-mail, DOI, Springer, …)
+   *   - "first-page-author-note"             → page 1, author-note pattern, no footnote(s)
+   *   - "single-footnote-after-author-note"  → page 1, author note(s) + ≥1 numbered note
+   *   - "none"                               → nothing detected, text stays in main body
    */
   detection:
     | "divider"
     | "trailing-numbered"
+    | "first-page-front-matter"
+    | "first-page-publication-metadata"
     | "first-page-author-note"
     | "single-footnote-after-author-note"
     | "none";
@@ -291,9 +295,28 @@ function findFirstNumberedAnchor(text: string, from: number): number {
 }
 
 /**
+ * Is the period at `periodIdx` an INITIAL like "D." / "J." / "T.S."
+ * rather than a sentence terminator? Recognizes:
+ *   - single capital letter + period at a word boundary ("D. Belo")
+ *   - chained initials ("T.S. Eliot" — the dot after S is preceded by S preceded by .)
+ */
+function looksLikeInitial(text: string, periodIdx: number): boolean {
+  if (periodIdx < 1) return false;
+  const prevChar = text[periodIdx - 1];
+  if (!/[A-Z]/.test(prevChar)) return false;
+  if (periodIdx === 1) return true;
+  const beforeUpper = text[periodIdx - 2];
+  // Allow whitespace, start-of-text, or a preceding period (chained initial).
+  return /[\s.]/.test(beforeUpper);
+}
+
+/**
  * Walk backwards from `anchorIdx` to find the start of the sentence (or line)
  * containing the anchor. We treat `. `, `! `, `? `, or `\n` as boundaries.
- * Returns 0 if no boundary is found.
+ * Single-capital initials ("D.", "J.", chained "T.S.") are NOT treated as
+ * sentence terminators — otherwise a metadata anchor like "(B)" preceded by
+ * "D. Belo (B)" would cut between "D." and " Belo", leaving "D." dangling
+ * in the body. Returns 0 if no boundary is found.
  */
 function backUpToSentenceStart(text: string, anchorIdx: number): number {
   for (let i = anchorIdx - 1; i > 0; i--) {
@@ -307,6 +330,8 @@ function backUpToSentenceStart(text: string, anchorIdx: number): number {
     if ((ch === "." || ch === "!" || ch === "?") && i + 1 < text.length) {
       const next = text[i + 1];
       if (next === " " || next === "\t" || next === "\n") {
+        // Skip past initials — keep walking backward.
+        if (ch === "." && looksLikeInitial(text, i)) continue;
         let j = i + 1;
         while (j < text.length && /\s/.test(text[j])) j++;
         return Math.min(j, anchorIdx);
@@ -314,6 +339,110 @@ function backUpToSentenceStart(text: string, anchorIdx: number): number {
     }
   }
   return 0;
+}
+
+/**
+ * Patterns that strongly indicate publication boilerplate / author affiliation
+ * on the first page of an academic chapter — common in Springer, Wiley,
+ * Routledge, etc. chapter PDFs. None individually are conclusive (a body
+ * paragraph might legitimately mention "Springer" in a citation), so the
+ * `tryFirstPagePublicationMetadata` strategy requires ≥2 distinct patterns
+ * to match AND for the matches to cluster within a ~2000-char window.
+ */
+const METADATA_PATTERNS: RegExp[] = [
+  /\bDepartment\s+of\b/i,
+  /\bUniversity\b/,
+  /\be-?mail\s*:/i,
+  /©/,
+  /\bThe\s+Author\(s\)/i,
+  /\bexclusive\s+license\b/i,
+  /\bSpringer\b/,
+  /\bNature\s+Switzerland\b/i,
+  /https?:\/\/(?:dx\.)?doi\.org\//i,
+  /\bdoi\.org\b/i,
+  /\(eds?\.\)/i,
+  /\(B\)\s/,
+];
+
+/**
+ * Maximum span between the first and last metadata signal. If signals are
+ * scattered further than this across the page, they're more likely body
+ * content (e.g. multiple citations sprinkled through an essay) than a
+ * single boilerplate block.
+ */
+const METADATA_CLUSTER_MAX_SPAN = 2000;
+
+/**
+ * Page-1-only publication-metadata detection. Catches Springer / Wiley /
+ * Routledge chapter front-matter that intermixes with the abstract on the
+ * extracted text (affiliation, e-mail, DOI, copyright, editor list, etc.)
+ * and would otherwise pollute the main body and AI summaries.
+ *
+ * Conservative tuning:
+ *   - Requires ≥2 DISTINCT pattern matches.
+ *   - Requires those matches to cluster within METADATA_CLUSTER_MAX_SPAN
+ *     chars of each other.
+ *   - Cuts at the sentence/line start before the earliest signal so we
+ *     don't slice mid-sentence.
+ *   - Bails if the resulting metadata block is shorter than 30 chars.
+ *
+ * mainText may be empty — for Springer chapter "page 1" content that is
+ * almost entirely front-matter, returning empty mainText is correct.
+ */
+function tryFirstPagePublicationMetadata(
+  text: string,
+  page: number,
+): FootnoteExtractionResult | null {
+  if (page !== 1) return null;
+
+  const positions: { index: number; pattern: string }[] = [];
+  for (const re of METADATA_PATTERNS) {
+    const m = re.exec(text);
+    if (m) positions.push({ index: m.index, pattern: re.source });
+  }
+
+  if (positions.length < 2) {
+    dbg(
+      `metadata: only ${positions.length} signal(s) on page 1 — need ≥2`,
+    );
+    return null;
+  }
+
+  positions.sort((a, b) => a.index - b.index);
+  const first = positions[0];
+  const last = positions[positions.length - 1];
+
+  if (last.index - first.index > METADATA_CLUSTER_MAX_SPAN) {
+    dbg(
+      `metadata: ${positions.length} signals span ${last.index - first.index}c (> ${METADATA_CLUSTER_MAX_SPAN}) — too scattered, bailing`,
+    );
+    return null;
+  }
+
+  const cutPoint = backUpToSentenceStart(text, first.index);
+  const mainText = text.slice(0, cutPoint).replace(/\s+$/, "");
+  const metadataBlock = text
+    .slice(cutPoint)
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (metadataBlock.length < 30) {
+    dbg(
+      `metadata: block only ${metadataBlock.length}c after cut — bailing`,
+    );
+    return null;
+  }
+
+  dbg(
+    `metadata: SPLIT (${positions.length} signals, span=${last.index - first.index}c, main=${mainText.length}c, metadata=${metadataBlock.length}c, earliest pattern=${first.pattern})`,
+  );
+
+  return {
+    mainText,
+    footnotes: [],
+    authorNote: metadataBlock,
+    detection: "first-page-publication-metadata",
+  };
 }
 
 /**
@@ -494,10 +623,11 @@ export function extractFootnotes(
   }
 
   // Order: most-reliable to least-reliable.
-  //   1. divider              — explicit horizontal rule before notes (any page)
-  //   2. trailing-numbered    — ≥2 sequential numbered notes in page tail (any page)
-  //   3. first-page anchor-split — paragraph-agnostic; needs BOTH author-note phrase AND numbered opener (page 1 only)
-  //   4. first-page author-note — paragraph-aware; broader but needs blank lines (page 1 only)
+  //   1. divider                     — explicit horizontal rule before notes (any page)
+  //   2. trailing-numbered           — ≥2 sequential numbered notes in page tail (any page)
+  //   3. first-page publication-metadata — page 1 only; ≥2 clustered metadata signals (©, e-mail, DOI, Springer, etc.)
+  //   4. first-page anchor-split     — paragraph-agnostic; needs BOTH author-note phrase AND numbered opener (page 1 only)
+  //   5. first-page author-note      — paragraph-aware; broader but needs blank lines (page 1 only)
   const fromDivider = tryDivider(pageText, page);
   if (fromDivider) {
     dbg(`page ${page}: detection=${fromDivider.detection}`);
@@ -508,6 +638,12 @@ export function extractFootnotes(
   if (fromTrailing) {
     dbg(`page ${page}: detection=${fromTrailing.detection}`);
     return fromTrailing;
+  }
+
+  const fromMetadata = tryFirstPagePublicationMetadata(pageText, page);
+  if (fromMetadata) {
+    dbg(`page ${page}: detection=${fromMetadata.detection}`);
+    return fromMetadata;
   }
 
   const fromAnchorSplit = tryFirstPageAnchorSplit(pageText, page);
@@ -524,4 +660,138 @@ export function extractFootnotes(
 
   dbg(`page ${page}: detection=none`);
   return { mainText: pageText, footnotes: [], detection: "none" };
+}
+
+const FRONT_MATTER_MAX_OFFSET = 800; // search the first 800 chars of page text
+const FRONT_MATTER_MAX_CHARS = 600; // total length cap on the stripped block
+const FRONT_MATTER_MIN_WORDS = 3; // need at least chapter + title + something
+const FRONT_MATTER_MIN_CAP_RATIO = 0.35; // ≥35% words start with capital
+
+const KNOWN_SECTION_NAMES_PATTERN =
+  "Introduction|Conclusion|Conclusions|Abstract|Background|Methods|Methodology|Results|Findings|Discussion|References|Bibliography|Acknowledgments|Acknowledgements|Appendix|Summary|Notes|Overview|Preface|Foreword|Epilogue";
+
+// Lowercase words that, when they follow a section-name candidate, signal
+// the candidate is just a word in a phrase ("Introduction to Logic"), not
+// a real section heading.
+const FRONT_MATTER_BLOCKERS_PATTERN =
+  "to|of|by|for|in|on|at|from|with|and|or|the|a|an|as|via|using|toward|towards|that|this|these|those";
+
+/**
+ * Locate the first plausible section-heading word in `text`.
+ *
+ * The lookbehind requires preceding context that suggests we just left a
+ * front-matter token (a capital word, a sentence end, a newline, a digit
+ * like "13", or the very start of the text). The lookahead rejects matches
+ * where the word is just a noun phrase ("Introduction to Logic" — "to" is
+ * a blocker). The capital-letter capture ensures whatever follows looks
+ * like real prose (a sentence start).
+ */
+const FRONT_MATTER_HEADING_RE = new RegExp(
+  `(?<=(?:^|[.!?]\\s+|\\n\\s*|[A-Z][a-zA-Z]+\\s+|\\d+\\s+))(${KNOWN_SECTION_NAMES_PATTERN})\\s+(?!(?:${FRONT_MATTER_BLOCKERS_PATTERN})\\b)([A-Z])`,
+);
+
+export interface FrontMatterResult {
+  /** Page text with the front-matter block removed (heading + body remain). */
+  mainText: string;
+  /** Concatenated front-matter text — chapter number + title + author + any preceding lines. */
+  frontMatter: string;
+}
+
+/**
+ * Strip the title-page block from the START of page-1 text. Handles both
+ * shapes unpdf can produce:
+ *
+ *   (A) line-by-line:
+ *     "CHAPTER 13"
+ *     "Middle Power Foreign Policy in an Era of Gray Zone Conflict…"
+ *     "Dani Belo"
+ *     "Introduction"
+ *     "A defining characteristic of contemporary international relations…"
+ *
+ *   (B) collapsed-into-one-line (the actual Belo extraction):
+ *     "CHAPTER 13 Middle Power Foreign Policy … Canada Dani Belo Introduction A defining…"
+ *
+ * Both produce the same result:
+ *   mainText  = "Introduction\n\nA defining characteristic …"
+ *   frontMatter = "CHAPTER 13 Middle Power … Dani Belo"
+ *
+ * Conservative — bails when:
+ *   - no known section heading is found within the first 800 chars of text
+ *   - the section name is followed by a lowercase preposition/article
+ *     ("Introduction to Logic" → bail)
+ *   - the pre-heading block exceeds 600 chars (probably body, not front matter)
+ *   - the pre-heading block ends in sentence-prose punctuation
+ *     (`lowercase + .|!|?`) — body text, not a title
+ *   - the pre-heading block has fewer than 3 words
+ *   - fewer than 35% of pre-heading words start with a capital letter
+ *     (titles are mostly capitalized; body prose is mostly lowercase)
+ *
+ * Returns null when no front-matter is detected; caller leaves text alone.
+ * Page 1 only — caller enforces that.
+ */
+export function stripFrontMatter(text: string): FrontMatterResult | null {
+  if (!text || text.length < 20) return null;
+
+  const m = FRONT_MATTER_HEADING_RE.exec(text);
+  if (!m) {
+    dbg("front-matter: no known section name found in pre-heading window");
+    return null;
+  }
+
+  const headingStart = m.index;
+  const headingName = m[1];
+  const proseFirstChar = m[2];
+
+  if (headingStart === 0) {
+    // Heading is at the very start — nothing to strip.
+    return null;
+  }
+  if (headingStart > FRONT_MATTER_MAX_OFFSET) {
+    dbg(
+      `front-matter: heading "${headingName}" at offset ${headingStart} — beyond ${FRONT_MATTER_MAX_OFFSET}, bailing`,
+    );
+    return null;
+  }
+
+  const frontMatterRaw = text.slice(0, headingStart).trim();
+  if (frontMatterRaw.length === 0) return null;
+  if (frontMatterRaw.length > FRONT_MATTER_MAX_CHARS) {
+    dbg(
+      `front-matter: block ${frontMatterRaw.length}c > ${FRONT_MATTER_MAX_CHARS} — bailing (looks like body)`,
+    );
+    return null;
+  }
+  if (/[a-z][.!?]\s*$/.test(frontMatterRaw)) {
+    dbg("front-matter: block ends in sentence-prose punctuation — bailing");
+    return null;
+  }
+
+  const words = frontMatterRaw
+    .split(/\s+/)
+    .filter((w) => w.length > 0);
+  if (words.length < FRONT_MATTER_MIN_WORDS) return null;
+  const capCount = words.filter((w) => /^[A-Z]/.test(w)).length;
+  const capRatio = capCount / words.length;
+  if (capRatio < FRONT_MATTER_MIN_CAP_RATIO) {
+    dbg(
+      `front-matter: cap-ratio ${(capRatio * 100).toFixed(0)}% < ${FRONT_MATTER_MIN_CAP_RATIO * 100}% — looks like prose, bailing`,
+    );
+    return null;
+  }
+
+  // Reconstruct: heading + remainder (preserving the prose continuation).
+  // m[0] is `"<heading><whitespace><proseFirstChar>"` — we want to put back
+  // the heading on its own line, then the prose starting with proseFirstChar.
+  const afterMatchEnd = headingStart + m[0].length;
+  const remainder = text.slice(afterMatchEnd);
+  const mainText = `${headingName}\n\n${proseFirstChar}${remainder}`;
+
+  dbg(
+    `front-matter: STRIPPED ${frontMatterRaw.length}c (${words.length} words, ${(capRatio * 100).toFixed(0)}% caps) — heading "${headingName}" at offset ${headingStart}`,
+  );
+
+  return {
+    mainText,
+    frontMatter: frontMatterRaw.replace(/\s+/g, " ").trim(),
+  };
 }

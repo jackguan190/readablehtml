@@ -8,6 +8,44 @@ export type Paragraph = {
   page?: number;
   dropcap?: boolean;
   inline: Inline[];
+  /**
+   * Optional classification — used by the reading view to render hidden /
+   * header / metadata / table blocks differently. Default (absent) = body.
+   */
+  blockType?:
+    | "heading"
+    | "body"
+    | "header_footer"
+    | "metadata"
+    | "table"
+    | "figure"
+    | "footnote";
+  /** When true, paragraph is dimmed/collapsed in the reading view. */
+  hidden?: boolean;
+  /** True if the user manually corrected this paragraph's classification. */
+  userCorrected?: boolean;
+
+  // ------- table-block fields (only set when blockType === "table") -------
+  /** Table caption (e.g. "Table 13.2 Canada in Gray Zone Conflict…"). */
+  caption?: string;
+  /**
+   * Original linearized text the table extractor saw. Preserved so a
+   * future layout-aware extractor can reconstruct columns/rows without
+   * having to re-extract from the PDF.
+   */
+  rawText?: string;
+  /**
+   * How confident we are in the table reconstruction. Today only
+   * "detected_caption_only" — caption recognized but rows not parsed.
+   */
+  confidence?:
+    | "detected_caption_only"
+    | "extracted_rows"
+    | "ai_reconstructed";
+  /** Future: HTML table reconstruction. Null until a layout extractor lands. */
+  htmlTable?: string | null;
+  /** True when the storage bucket has the original PDF, so "View original scan" works. */
+  originalScanAvailable?: boolean;
 };
 
 export type Footnote = {

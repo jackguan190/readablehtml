@@ -1,12 +1,17 @@
 import "server-only";
 
-import OpenAI from "openai";
 import { paragraphize } from "./paragraphizer";
 import type { RawPage, StructuredSectionInput } from "./structuring";
-import { attachFootnotesToSections, bodyTextFor, buildHeuristicSections } from "./structuring";
+import {
+  attachFootnotesToSections,
+  bodyTextFor,
+  buildHeuristicSections,
+  convertTableParagraphs,
+} from "./structuring";
 import type { SerializedParagraph } from "./types";
+import { buildProvider, LlmProviderError } from "@/lib/llm/provider";
+import type { LlmErrorCode, LlmProviderConfig, LlmProviderKind } from "@/lib/llm/types";
 
-const MODEL = "gpt-4o-mini";
 const MAX_CHARS = 60_000; // ~12-15k tokens for typical English; safe for a single call
 
 interface AIPlanSection {
@@ -24,32 +29,53 @@ interface AIPlan {
 export interface AiStructureResult {
   kind: "ok";
   sections: StructuredSectionInput[];
+  modelUsed: string;
+  providerUsed: LlmProviderKind;
 }
 
 export interface AiStructureSkipped {
   kind: "skipped";
-  reason: "no_api_key" | "openai_error" | "no_text";
+  reason:
+    | "no_api_key"
+    | "no_text"
+    | LlmErrorCode;
   detail?: string;
 }
 
 export type AiStructureOutcome = AiStructureResult | AiStructureSkipped;
 
-function isOpenAiConfigured(): boolean {
-  return !!process.env.OPENAI_API_KEY;
+/**
+ * Replace "Table N. caption…" regions in body text with a compact marker so
+ * the LLM knows a table exists but doesn't ingest the scrambled cell text
+ * that unpdf's linear extraction produces. Tables get rendered separately
+ * as a card in the reader — the LLM doesn't need to see their contents to
+ * summarize the surrounding prose accurately.
+ */
+function scrubTableLinearizationForPrompt(text: string): string {
+  // Match: "Table N" or "Table N.N", optional ".", then caption-ish content
+  // up to first ". " (caption end) — replace with a placeholder. Greedy
+  // catch is intentionally bounded to ~220 chars so we don't swallow body
+  // paragraphs after the table caption.
+  return text.replace(
+    /Table\s+(\d+(?:\.\d+)?)\s*[.:]?\s*([^.]{0,220}\.)\s*/g,
+    (_match, num, captionRest) =>
+      `\n\n[Table ${num} — ${String(captionRest).trim().slice(0, 140)} (table content present, not transcribed in this prompt)]\n\n`,
+  );
 }
 
 function compactPagesForPrompt(pages: RawPage[]): string {
   // Send only main body text to the LLM — footnotes and author-note text are
   // deliberately excluded so they don't pollute generated summaries / titles.
   // Footnotes are attached separately to the resulting sections via
-  // attachFootnotesToSections().
+  // attachFootnotesToSections(). Tables are scrubbed to a marker so their
+  // scrambled cell text doesn't show up as fake prose in the prompt.
   let total = 0;
   const out: string[] = [];
   for (const p of pages) {
     const header = `--- PAGE ${p.page} ---\n`;
     const remaining = MAX_CHARS - total - header.length;
     if (remaining <= 0) break;
-    const body = bodyTextFor(p);
+    const body = scrubTableLinearizationForPrompt(bodyTextFor(p));
     const text = body.slice(0, Math.max(0, remaining));
     out.push(header + text);
     total += header.length + text.length;
@@ -71,33 +97,44 @@ Rules:
 - Do not invent content not present in the source.
 - Do not include the body paragraphs in your output — only structural metadata.`;
 
-async function fetchPlan(pages: RawPage[]): Promise<AIPlan> {
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+async function fetchPlan(
+  pages: RawPage[],
+  config: LlmProviderConfig,
+): Promise<{ plan: AIPlan; modelUsed: string; providerUsed: LlmProviderKind }> {
+  const provider = buildProvider(config);
   const prompt = compactPagesForPrompt(pages);
-  const completion = await client.chat.completions.create({
-    model: MODEL,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: prompt },
-    ],
+  const result = await provider.callStructured({
+    systemPrompt: SYSTEM_PROMPT,
+    userPrompt: prompt,
+    responseFormat: "json",
     temperature: 0.2,
   });
-  const raw = completion.choices[0]?.message?.content ?? "{}";
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(result.content);
   } catch {
-    throw new Error("OpenAI returned non-JSON content.");
+    throw new LlmProviderError(
+      result.providerUsed,
+      "unknown",
+      `${result.providerUsed} returned non-JSON content.`,
+    );
   }
   if (
     !parsed ||
     typeof parsed !== "object" ||
     !Array.isArray((parsed as AIPlan).sections)
   ) {
-    throw new Error("OpenAI plan was missing 'sections' array.");
+    throw new LlmProviderError(
+      result.providerUsed,
+      "unknown",
+      `${result.providerUsed} plan was missing 'sections' array.`,
+    );
   }
-  return parsed as AIPlan;
+  return {
+    plan: parsed as AIPlan,
+    modelUsed: result.modelUsed,
+    providerUsed: result.providerUsed,
+  };
 }
 
 function clamp(n: number, lo: number, hi: number): number {
@@ -183,7 +220,7 @@ function mergePlanWithRawPages(
             .map((kt) => ({ term: kt.term.trim(), def: kt.def.trim() }))
             .slice(0, 6)
         : [],
-      body: { paragraphs },
+      body: { paragraphs: convertTableParagraphs(paragraphs) },
     });
   });
 
@@ -196,25 +233,46 @@ function mergePlanWithRawPages(
 }
 
 /**
- * Run AI-driven structuring. Returns `skipped` if OPENAI_API_KEY is missing
- * or the call fails — callers should fall back to heuristic structuring.
+ * Run AI-driven structuring against the configured provider (platform OpenAI
+ * by default, or a BYOK provider when supplied). Returns `skipped` with a
+ * structured `LlmErrorCode` reason if the provider isn't usable; callers
+ * should fall back to heuristic structuring on `skipped`.
+ *
+ * Provider config flow:
+ *   - `undefined`           → `{ source: "platform" }` (platform OPENAI_API_KEY).
+ *   - `{ source: "byok" }`  → user-supplied key + provider (openai | deepseek).
+ *
+ * The provider config is never persisted; it only lives for the duration of
+ * this call and is dropped immediately after.
  */
-export async function aiStructure(pages: RawPage[]): Promise<AiStructureOutcome> {
-  if (!isOpenAiConfigured()) {
-    return { kind: "skipped", reason: "no_api_key" };
-  }
+export async function aiStructure(
+  pages: RawPage[],
+  providerConfig?: LlmProviderConfig,
+): Promise<AiStructureOutcome> {
+  const config: LlmProviderConfig = providerConfig ?? { source: "platform" };
+
   if (pages.length === 0 || pages.every((p) => !p.text.trim())) {
     return { kind: "skipped", reason: "no_text" };
   }
 
   try {
-    const plan = await fetchPlan(pages);
+    const { plan, modelUsed, providerUsed } = await fetchPlan(pages, config);
     const sections = mergePlanWithRawPages(plan, pages);
-    return { kind: "ok", sections };
+    return { kind: "ok", sections, modelUsed, providerUsed };
   } catch (err) {
+    if (err instanceof LlmProviderError) {
+      // Map "not_configured" back to the legacy "no_api_key" reason so existing
+      // callers' message-mapping logic continues to work.
+      const reason = err.code === "not_configured" ? "no_api_key" : err.code;
+      return {
+        kind: "skipped",
+        reason,
+        detail: err.message,
+      };
+    }
     return {
       kind: "skipped",
-      reason: "openai_error",
+      reason: "unknown",
       detail: err instanceof Error ? err.message : String(err),
     };
   }
