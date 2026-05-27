@@ -25,6 +25,11 @@ import { Drawer } from "@/components/Drawer";
 import { MobileBottomBar } from "@/components/MobileBottomBar";
 import { ViewToggle, type ViewMode } from "@/components/ViewToggle";
 import {
+  AiSettingsButton,
+  aiSettingsDefault,
+  type AiSettingsValue,
+} from "@/components/AiSettings";
+import {
   createAnnotation,
   deleteAnnotation,
   toggleHighlightAnnotation,
@@ -224,6 +229,10 @@ export function DocumentClient({
   const [chandraRunning, startChandra] = useTransition();
   const [restructureError, setRestructureError] = useState<string | null>(null);
   const [restructureInfo, setRestructureInfo] = useState<string | null>(null);
+  // session-only; do not persist (no localStorage, no cookies)
+  const [aiSettings, setAiSettings] = useState<AiSettingsValue>(() =>
+    aiSettingsDefault(),
+  );
   const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(null);
   const notesInputRef = useRef<HTMLTextAreaElement>(null);
   const activeAnnotationTimer = useRef<number | null>(null);
@@ -498,7 +507,7 @@ export function DocumentClient({
     setRestructureError(null);
     setRestructureInfo(null);
     startRestructureAi(async () => {
-      const res = await restructureWithAI(document.id);
+      const res = await restructureWithAI(document.id, aiSettings.config);
       if ("error" in res) {
         setRestructureError(res.error);
       } else {
@@ -780,6 +789,7 @@ export function DocumentClient({
                 {processingModeLabel}
               </span>
             </span>
+            <AiSettingsButton value={aiSettings} onChange={setAiSettings} />
             <button
               type="button"
               onClick={handleRestructurePlain}
@@ -919,6 +929,8 @@ export function DocumentClient({
                     onSelectAnnotation={handleSelectAnnotation}
                     activeAnnotationId={activeAnnotationId}
                     onToggleParagraphHidden={handleToggleParagraphHidden}
+                    aiProviderConfig={aiSettings.config}
+                    documentId={document.id}
                   />
                 )}
                 {mode === "split" && (
@@ -927,6 +939,8 @@ export function DocumentClient({
                     activeHighlights={activeHighlights}
                     toggleHighlight={toggleHighlight}
                     sectionIndex={activeIndex}
+                    aiProviderConfig={aiSettings.config}
+                    documentId={document.id}
                   />
                 )}
               </div>

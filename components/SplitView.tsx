@@ -2,6 +2,7 @@
 
 import { ArrowRight, FileText, Sparkles, Eye, Type } from "lucide-react";
 import type { Section } from "@/lib/content";
+import type { LlmProviderConfig } from "@/lib/llm/types";
 import { ScanView } from "./ScanView";
 import { ReadingView } from "./ReadingView";
 
@@ -10,6 +11,8 @@ interface Props {
   activeHighlights: Set<string>;
   toggleHighlight: (id: string, text: string, sectionId: string, page?: number) => void;
   sectionIndex?: number;
+  aiProviderConfig?: LlmProviderConfig;
+  documentId?: string;
 }
 
 export function SplitView({
@@ -17,6 +20,8 @@ export function SplitView({
   activeHighlights,
   toggleHighlight,
   sectionIndex,
+  aiProviderConfig,
+  documentId,
 }: Props) {
   return (
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-8 xl:gap-10 relative">
@@ -55,6 +60,8 @@ export function SplitView({
             toggleHighlight={toggleHighlight}
             compact
             sectionIndex={sectionIndex}
+            aiProviderConfig={aiProviderConfig}
+            documentId={documentId}
           />
         </div>
         <div className="mt-3 flex items-center justify-between text-2xs text-ink-subtle px-1">
