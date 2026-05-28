@@ -25,6 +25,11 @@ import { Drawer } from "@/components/Drawer";
 import { MobileBottomBar } from "@/components/MobileBottomBar";
 import { ViewToggle, type ViewMode } from "@/components/ViewToggle";
 import {
+  AiSettingsButton,
+  aiSettingsDefault,
+  type AiSettingsValue,
+} from "@/components/AiSettings";
+import {
   createAnnotation,
   deleteAnnotation,
   toggleHighlightAnnotation,
@@ -224,6 +229,10 @@ export function DocumentClient({
   const [chandraRunning, startChandra] = useTransition();
   const [restructureError, setRestructureError] = useState<string | null>(null);
   const [restructureInfo, setRestructureInfo] = useState<string | null>(null);
+  // session-only; do not persist (no localStorage, no cookies)
+  const [aiSettings, setAiSettings] = useState<AiSettingsValue>(() =>
+    aiSettingsDefault(),
+  );
   const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(null);
   const notesInputRef = useRef<HTMLTextAreaElement>(null);
   const activeAnnotationTimer = useRef<number | null>(null);
@@ -234,6 +243,16 @@ export function DocumentClient({
   const notes = useMemo(
     () => annotations.map(annotationToNote),
     [annotations],
+  );
+
+  // Detect the heuristic's page-fallback shape — every section uses the
+  // `page-N` section_key. Same shape applies to legacy extraction_only docs.
+  // Must be declared before any early return (Rules of Hooks).
+  const isPageFallback = useMemo(
+    () =>
+      sortedPages.length > 0 &&
+      sortedPages.every((p) => /^page-\d+$/.test(p.section_key)),
+    [sortedPages],
   );
 
   const activeIndex = useMemo(
@@ -498,7 +517,7 @@ export function DocumentClient({
     setRestructureError(null);
     setRestructureInfo(null);
     startRestructureAi(async () => {
-      const res = await restructureWithAI(document.id);
+      const res = await restructureWithAI(document.id, aiSettings.config);
       if ("error" in res) {
         setRestructureError(res.error);
       } else {
@@ -680,14 +699,6 @@ export function DocumentClient({
   const modeMeta = describeMode(document.status, document.processing_mode);
   const pageCount = document.page_count ?? sortedPages.length;
   const restructuring = restructuringAi || restructuringPlain || chandraRunning;
-  // Detect the heuristic's page-fallback shape — every section uses the
-  // `page-N` section_key. Same shape applies to legacy extraction_only docs.
-  const isPageFallback = useMemo(
-    () =>
-      sortedPages.length > 0 &&
-      sortedPages.every((p) => /^page-\d+$/.test(p.section_key)),
-    [sortedPages],
-  );
   // processing_mode === null means migration 0006 hasn't been applied yet,
   // or the document predates the column. Surface clearly so the user knows.
   const processingModeLabel: string =
@@ -780,6 +791,7 @@ export function DocumentClient({
                 {processingModeLabel}
               </span>
             </span>
+            <AiSettingsButton value={aiSettings} onChange={setAiSettings} />
             <button
               type="button"
               onClick={handleRestructurePlain}
@@ -919,6 +931,8 @@ export function DocumentClient({
                     onSelectAnnotation={handleSelectAnnotation}
                     activeAnnotationId={activeAnnotationId}
                     onToggleParagraphHidden={handleToggleParagraphHidden}
+                    aiProviderConfig={aiSettings.config}
+                    documentId={document.id}
                   />
                 )}
                 {mode === "split" && (
@@ -927,6 +941,8 @@ export function DocumentClient({
                     activeHighlights={activeHighlights}
                     toggleHighlight={toggleHighlight}
                     sectionIndex={activeIndex}
+                    aiProviderConfig={aiSettings.config}
+                    documentId={document.id}
                   />
                 )}
               </div>

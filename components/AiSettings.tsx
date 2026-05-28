@@ -20,7 +20,7 @@ interface Props {
   onChange: (next: AiSettingsValue) => void;
 }
 
-function makeDisplayLabel(config: LlmProviderConfig): string {
+export function makeDisplayLabel(config: LlmProviderConfig): string {
   if (config.source === "platform") {
     return `Platform · ${config.model ?? LLM_DEFAULTS.openai.defaultModel}`;
   }
