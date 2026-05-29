@@ -86,16 +86,55 @@ export type LlmErrorCode =
   | "not_configured"
   | "unknown";
 
+/**
+ * Per-model capabilities. `supportsImageInput` is the single source of
+ * truth for whether a model can ingest a PDF / image as a content part
+ * (used by the BYOK Vision/OCR beta to gate the "Process with BYOK Vision"
+ * button and the server-side capability check).
+ */
+export interface ModelCapabilities {
+  supportsImageInput: boolean;
+}
+
 /** Defaults — referenced by both the provider impl and the AI Settings UI. */
 export const LLM_DEFAULTS = {
   openai: {
     baseUrl: "https://api.openai.com/v1",
     defaultModel: "gpt-4o-mini",
     models: ["gpt-4o-mini", "gpt-4o"] as const,
+    capabilities: {
+      "gpt-4o-mini": { supportsImageInput: true },
+      "gpt-4o": { supportsImageInput: true },
+    } satisfies Record<string, ModelCapabilities>,
   },
   deepseek: {
     baseUrl: "https://api.deepseek.com",
     defaultModel: "deepseek-v4-flash",
     models: ["deepseek-v4-flash", "deepseek-v4-pro"] as const,
+    capabilities: {
+      "deepseek-v4-flash": { supportsImageInput: false },
+      "deepseek-v4-pro": { supportsImageInput: false },
+    } satisfies Record<string, ModelCapabilities>,
   },
 } as const;
+
+/**
+ * Returns true when the configured provider+model can accept image / PDF
+ * input. Used to gate the BYOK Vision UI button and to enforce req 8/9
+ * at the action boundary. Unknown models default to false (closed by
+ * default — safer for "don't pretend DeepSeek supports images").
+ */
+export function providerSupportsVision(config: LlmProviderConfig): boolean {
+  const providerKey: LlmProviderKind =
+    config.source === "platform" ? "openai" : config.provider;
+  const defaults = LLM_DEFAULTS[providerKey];
+  const model =
+    config.model ??
+    (config.source === "byok"
+      ? defaults.defaultModel
+      : LLM_DEFAULTS.openai.defaultModel);
+  const caps = (defaults.capabilities as Record<string, ModelCapabilities>)[
+    model
+  ];
+  return caps?.supportsImageInput === true;
+}
