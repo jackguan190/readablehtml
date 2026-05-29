@@ -16,13 +16,19 @@ export type DocumentStatus =
   | "chandra_queued"
   | "chandra_processing"
   | "chandra_ready"
-  | "chandra_failed";
+  | "chandra_failed"
+  // BYOK Vision/OCR beta — user-triggered OpenAI vision processing of scanned PDFs.
+  | "vision_queued"
+  | "vision_processing"
+  | "vision_ready"
+  | "vision_failed";
 
 export type ProcessingMode =
   | "extraction_only"
   | "structured"
   | "ai_structured"
-  | "chandra";
+  | "chandra"
+  | "byok_vision";
 
 export type AnnotationKind = "highlight" | "note" | "quote" | "glossary" | "ai";
 
