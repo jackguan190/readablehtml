@@ -44,6 +44,10 @@ export type Paragraph = {
     | "ai_reconstructed";
   /** Future: HTML table reconstruction. Null until a layout extractor lands. */
   htmlTable?: string | null;
+  /** GitHub-flavored markdown reconstruction. Preserved when the vision/Chandra provider returns one. */
+  markdownTable?: string;
+  /** Structured JSON reconstruction ({ header, rows } or similar). Preserved lossless from the provider; opaque to the renderer for now. */
+  jsonTable?: unknown;
   /** True when the storage bucket has the original PDF, so "View original scan" works. */
   originalScanAvailable?: boolean;
 };

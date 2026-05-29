@@ -99,6 +99,8 @@ export interface SerializedParagraph {
     | "extracted_rows"
     | "ai_reconstructed";
   htmlTable?: string | null;
+  markdownTable?: string;
+  jsonTable?: unknown;
   originalScanAvailable?: boolean;
 }
 
