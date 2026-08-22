@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:contract": "vitest run lib/contracts/document/v1"
+    "test:contract": "vitest run lib/contracts/document/v1",
+    "test:nebu": "vitest run lib/contracts/nebu/v1 lib/assignments"
   },
   "dependencies": {
     "@supabase/ssr": "^0.10.3",
