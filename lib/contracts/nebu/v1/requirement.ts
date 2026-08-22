@@ -51,6 +51,14 @@ export const assignmentUnderstandingV1Schema = z
     items: z.array(assignmentRequirementV1Schema).min(1),
   })
   .superRefine((value, ctx) => {
+    if (value.brief.assignmentId !== value.assignmentId) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["brief", "assignmentId"],
+        message: "assignment brief belongs to another assignment",
+      });
+    }
+
     const ids = new Set<string>();
     value.items.forEach((item, index) => {
       if (ids.has(item.id)) {
@@ -63,9 +71,22 @@ export const assignmentUnderstandingV1Schema = z
       if (item.reasoningClass === "required" && item.support === null) {
         ctx.addIssue({ code: "custom", path: ["items", index, "support"], message: "required items need exact source support" });
       }
+      if (item.kind === "rubric_criterion" && item.reasoningClass !== "required") {
+        ctx.addIssue({
+          code: "custom",
+          path: ["items", index, "reasoningClass"],
+          message: "rubric criteria must be required, never inferred",
+        });
+      }
       if (item.support) {
         const { start, end, quote, materialId } = item.support;
-        if (materialId !== value.brief.id || value.brief.text.slice(start, end) !== quote) {
+        if (end > value.brief.text.length) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["items", index, "support", "end"],
+            message: "support end must be within the assignment brief",
+          });
+        } else if (materialId !== value.brief.id || value.brief.text.slice(start, end) !== quote) {
           ctx.addIssue({ code: "custom", path: ["items", index, "support"], message: "support must resolve exactly inside the assignment brief" });
         }
       }
