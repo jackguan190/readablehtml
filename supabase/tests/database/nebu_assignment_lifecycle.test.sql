@@ -77,14 +77,32 @@ create temp table started_jobs (
   job_id uuid not null
 ) on commit drop;
 
+insert into public.assignment_analysis_jobs (
+  user_id, assignment_id, status, attempts, created_at
+)
+select
+  '00000000-0000-0000-0000-0000000000a1'::uuid,
+  assignment_id,
+  'queued',
+  0,
+  now() - interval '6 minutes'
+from setup_result;
+
 insert into started_jobs (job_id)
 select public.start_assignment_analysis(assignment_id)
 from setup_result;
 
-select is(
-  (select count(*)::integer from started_jobs where job_id is not null),
-  1,
-  'starting analysis returns one job ID'
+select ok(
+  (select count(*) = 1 from started_jobs where job_id is not null)
+  and (
+    select count(*) = 1
+    from public.assignment_analysis_jobs j
+    join setup_result r on r.assignment_id = j.assignment_id
+    where j.status = 'failed'
+      and j.started_at is null
+      and j.error = 'Analysis timed out. Try again.'
+  ),
+  'starting analysis recovers an old queued job and returns one new job ID'
 );
 
 select ok(
@@ -107,6 +125,22 @@ select is(
   'assignment becomes processing'
 );
 
+select throws_ok(
+  $invalid_rubric$
+    select public.complete_assignment_analysis(
+      (select assignment_id from setup_result),
+      (select job_id from started_jobs where sequence = 1),
+      (select brief_material_id from setup_result),
+      '[{"kind":"rubric_criterion","text":"Make a persuasive argument.","reasoningClass":"inference","sourceQuote":null,"sourceStart":null,"sourceEnd":null,"orderIndex":0}]'::jsonb,
+      'test-provider',
+      'invalid-rubric-model'
+    )
+  $invalid_rubric$,
+  '22023',
+  'rubric criteria must be required',
+  'an inferred rubric criterion is rejected without consuming the running job'
+);
+
 select public.complete_assignment_analysis(
   r.assignment_id,
   s.job_id,
@@ -118,25 +152,15 @@ select public.complete_assignment_analysis(
 from setup_result r
 join started_jobs s on s.sequence = 1;
 
-select is(
+select ok(
   (
-    select j.status
+    select j.status = 'succeeded' and a.understanding_status = 'ready'
     from public.assignment_analysis_jobs j
     join started_jobs s on s.job_id = j.id
+    join public.assignments a on a.id = j.assignment_id
     where s.sequence = 1
   ),
-  'succeeded',
-  'completing analysis marks the job succeeded'
-);
-
-select is(
-  (
-    select a.understanding_status
-    from public.assignments a
-    join setup_result r on r.assignment_id = a.id
-  ),
-  'ready',
-  'completing analysis marks the assignment ready'
+  'valid completion after rejected rubric marks the job succeeded and assignment ready'
 );
 
 select ok(

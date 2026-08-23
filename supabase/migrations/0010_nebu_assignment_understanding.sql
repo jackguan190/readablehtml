@@ -68,6 +68,7 @@ create table public.assignment_requirements (
   order_index int not null check (order_index >= 0),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
+  check (kind <> 'rubric_criterion' or reasoning_class = 'required'),
   check (
     reasoning_class <> 'required' or
     (source_material_id is not null and source_quote is not null and source_start >= 0 and source_end > source_start)
@@ -208,7 +209,7 @@ begin
   where j.assignment_id = v_assignment_id
     and j.user_id = v_user_id
     and j.status in ('queued', 'running')
-    and j.started_at < now() - interval '5 minutes';
+    and coalesce(j.started_at, j.created_at) < now() - interval '5 minutes';
 
   insert into public.assignment_analysis_jobs (
     user_id, assignment_id, status, attempts, started_at
@@ -287,6 +288,18 @@ begin
   v_item_count := jsonb_array_length(p_items);
   if v_item_count < 1 or v_item_count > 40 then
     raise exception 'analysis items must contain between 1 and 40 records' using errcode = '22023';
+  end if;
+
+  if exists (
+    select 1
+    from jsonb_to_recordset(p_items) as item(
+      kind text,
+      "reasoningClass" text
+    )
+    where item.kind = 'rubric_criterion'
+      and item."reasoningClass" is distinct from 'required'
+  ) then
+    raise exception 'rubric criteria must be required' using errcode = '22023';
   end if;
 
   if exists (
