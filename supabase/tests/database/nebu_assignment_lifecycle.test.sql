@@ -1,5 +1,5 @@
 begin;
-select plan(13);
+select plan(15);
 
 insert into auth.users (
   instance_id, id, aud, role, email, encrypted_password,
@@ -145,7 +145,7 @@ select public.complete_assignment_analysis(
   r.assignment_id,
   s.job_id,
   r.brief_material_id,
-  '[{"kind":"constraint","text":"Use at least two primary sources.","reasoningClass":"required","sourceQuote":"at least two primary sources","sourceStart":42,"sourceEnd":70,"orderIndex":0},{"kind":"ambiguity","text":"Old AI proposal that the retry must replace.","reasoningClass":"inference","sourceQuote":null,"sourceStart":null,"sourceEnd":null,"orderIndex":1}]'::jsonb,
+  '[{"kind":"constraint","text":"Use at least two primary sources.","reasoningClass":"required","sourceQuote":"public memory","sourceStart":34,"sourceEnd":47,"orderIndex":0},{"kind":"ambiguity","text":"Old AI proposal that the retry must replace.","reasoningClass":"inference","sourceQuote":null,"sourceStart":null,"sourceEnd":null,"orderIndex":1}]'::jsonb,
   'test-provider',
   'test-model'
 )
@@ -182,6 +182,33 @@ where req.assignment_id = r.assignment_id
 insert into started_jobs (job_id)
 select public.start_assignment_analysis(assignment_id)
 from setup_result;
+
+select throws_ok(
+  $invalid_source_slice$
+    select public.complete_assignment_analysis(
+      (select assignment_id from setup_result),
+      (select job_id from started_jobs where sequence = 2),
+      (select brief_material_id from setup_result),
+      '[{"kind":"constraint","text":"Use the prompt focus.","reasoningClass":"required","sourceQuote":"public memory","sourceStart":0,"sourceEnd":6,"orderIndex":0}]'::jsonb,
+      'test-provider',
+      'invalid-source-model'
+    )
+  $invalid_source_slice$,
+  '22023',
+  'source support must match the assignment brief exactly',
+  'a mismatched source slice is rejected before replacing proposals'
+);
+
+select ok(
+  (
+    select j.status = 'running'
+      and a.understanding_status = 'processing'
+    from public.assignment_analysis_jobs j
+    join started_jobs s on s.job_id = j.id and s.sequence = 2
+    join public.assignments a on a.id = j.assignment_id
+  ),
+  'mismatched source support leaves the same job running for a valid retry'
+);
 
 select public.complete_assignment_analysis(
   r.assignment_id,

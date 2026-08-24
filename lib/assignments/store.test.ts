@@ -150,6 +150,45 @@ describe("completeAssignmentAnalysis", () => {
     expect(rpcCalled).toBe(false);
   });
 
+  it("rechecks optional source slices before completing the job", async () => {
+    const brief = briefQuery("Write about memory.");
+    let rpcCalled = false;
+    const supabase = {
+      from: () => brief.builder,
+      rpc: async () => {
+        rpcCalled = true;
+        return { data: null, error: null };
+      },
+    } as unknown as SupabaseClient;
+
+    const items: NewRequirementDraft[] = [
+      {
+        kind: "ambiguity",
+        text: "The prompt may expect memory theory.",
+        reasoningClass: "inference",
+        support: { quote: "memory", start: 0, end: 6 },
+        orderIndex: 0,
+      },
+    ];
+
+    await expect(
+      completeAssignmentAnalysis(
+        supabase,
+        "user-1",
+        "assignment-1",
+        "job-1",
+        "brief-1",
+        items,
+        "openai",
+        "gpt-test",
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      message: "Analysis source support no longer matches the assignment brief.",
+    });
+    expect(rpcCalled).toBe(false);
+  });
+
   it("serializes verified support into the atomic completion RPC", async () => {
     const brief = briefQuery("Write about memory.");
     let received: Record<string, unknown> | undefined;

@@ -243,6 +243,7 @@ declare
   v_assignment_id uuid;
   v_job_id uuid;
   v_brief_material_id uuid;
+  v_brief_text text;
   v_item_count int;
 begin
   if v_user_id is null then
@@ -270,7 +271,7 @@ begin
     raise exception 'running analysis job not found' using errcode = 'P0002';
   end if;
 
-  select m.id into v_brief_material_id
+  select m.id, m.raw_text into v_brief_material_id, v_brief_text
   from public.materials as m
   where m.id = p_brief_material_id
     and m.assignment_id = v_assignment_id
@@ -279,6 +280,10 @@ begin
 
   if v_brief_material_id is null then
     raise exception 'assignment brief not found' using errcode = 'P0002';
+  end if;
+
+  if v_brief_text is null then
+    raise exception 'assignment brief text not found' using errcode = 'P0002';
   end if;
 
   if p_items is null or jsonb_typeof(p_items) <> 'array' then
@@ -336,6 +341,31 @@ begin
       )
   ) then
     raise exception 'inference items cannot have source support' using errcode = '22023';
+  end if;
+
+  if exists (
+    select 1
+    from jsonb_to_recordset(p_items) as item(
+      "sourceQuote" text,
+      "sourceStart" int,
+      "sourceEnd" int
+    )
+    where (
+        item."sourceQuote" is not null
+        or item."sourceStart" is not null
+        or item."sourceEnd" is not null
+      )
+      and (
+        item."sourceQuote" is null
+        or item."sourceStart" is null
+        or item."sourceEnd" is null
+        or item."sourceStart" < 0
+        or item."sourceEnd" <= item."sourceStart"
+        or item."sourceEnd" > char_length(v_brief_text)
+        or substring(v_brief_text from item."sourceStart" + 1 for item."sourceEnd" - item."sourceStart") <> item."sourceQuote"
+      )
+  ) then
+    raise exception 'source support must match the assignment brief exactly' using errcode = '22023';
   end if;
 
   delete from public.assignment_requirements as requirement

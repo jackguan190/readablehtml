@@ -199,22 +199,24 @@ function serializeAnalysisItems(
   const serialized = [];
 
   for (const item of items) {
+    if (
+      item.support !== null &&
+      briefText.slice(item.support.start, item.support.end) !==
+        item.support.quote
+    ) {
+      return {
+        ok: false,
+        code: "database",
+        message: "Analysis source support no longer matches the assignment brief.",
+      };
+    }
+
     if (item.reasoningClass === "required") {
       if (item.support === null) {
         return {
           ok: false,
           code: "database",
           message: "Required analysis items need source support.",
-        };
-      }
-      if (
-        briefText.slice(item.support.start, item.support.end) !==
-        item.support.quote
-      ) {
-        return {
-          ok: false,
-          code: "database",
-          message: "Analysis source support no longer matches the assignment brief.",
         };
       }
     }
