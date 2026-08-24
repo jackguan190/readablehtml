@@ -169,6 +169,12 @@ export function DashboardClient({
             <span className="ml-2 eyebrow text-ink-faint">Dashboard</span>
           </Link>
           <div className="flex items-center gap-3 text-[12.5px] text-ink-muted">
+            <Link
+              href="/assignments"
+              className="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-accent hover:bg-paper-sunken hover:text-accent-ink transition-colors no-tap-highlight"
+            >
+              Open Nebu.AI
+            </Link>
             <span className="hidden sm:inline truncate max-w-[200px]">
               {userEmail}
             </span>
@@ -562,6 +568,25 @@ function StatusBadge({ status }: { status: DocumentStatus }) {
     },
     chandra_failed: {
       label: "Chandra failed",
+      tone: "text-red-700",
+      Icon: CircleAlert,
+    },
+    vision_queued: {
+      label: "Vision queued",
+      tone: "text-amber-700",
+    },
+    vision_processing: {
+      label: "Vision running",
+      tone: "text-amber-700",
+      Icon: Loader2,
+    },
+    vision_ready: {
+      label: "Vision ready",
+      tone: "text-emerald-700",
+      Icon: CircleCheckBig,
+    },
+    vision_failed: {
+      label: "Vision failed",
       tone: "text-red-700",
       Icon: CircleAlert,
     },
