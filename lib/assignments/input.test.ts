@@ -135,6 +135,16 @@ describe("parseCreateAssignmentInput", () => {
       message: "Course name is required.",
     },
     {
+      values: { ...base, courseId: "course-1" },
+      field: "courseMode",
+      message: "Choose whether to use an existing course or create a new one.",
+    },
+    {
+      values: { ...base, courseMode: "surprise", courseId: "course-1" },
+      field: "courseMode",
+      message: "Choose whether to use an existing course or create a new one.",
+    },
+    {
       values: {
         ...base,
         courseMode: "existing",

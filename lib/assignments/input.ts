@@ -1,4 +1,5 @@
 export const CREATE_ASSIGNMENT_ERRORS = {
+  courseMode: "Choose whether to use an existing course or create a new one.",
   courseId: "Choose a course.",
   courseName: "Course name is required.",
   assignmentTitle: "Assignment title is required.",
@@ -34,6 +35,10 @@ function field(formData: FormData, name: string): string {
 function optionalLabel(value: string): string | null {
   const normalized = value.trim();
   return normalized === "" ? null : normalized;
+}
+
+function isCourseMode(value: string): value is CreateAssignmentInput["courseMode"] {
+  return value === "existing" || value === "new";
 }
 
 function isValidDate(value: string): boolean {
@@ -72,6 +77,9 @@ export function parseCreateAssignmentInput(
   }
   if (dueOnValue !== "" && !isValidDate(dueOnValue)) {
     fieldErrors.dueOn = CREATE_ASSIGNMENT_ERRORS.dueOn;
+  }
+  if (!isCourseMode(courseMode)) {
+    fieldErrors.courseMode = CREATE_ASSIGNMENT_ERRORS.courseMode;
   }
   if (courseMode === "existing" && courseId === "") {
     fieldErrors.courseId = CREATE_ASSIGNMENT_ERRORS.courseId;
