@@ -32,12 +32,7 @@ export function NebuHeader({ userEmail }: NebuHeaderProps) {
           <span className="hidden sm:inline truncate max-w-[220px]">
             {userEmail}
           </span>
-          <form
-            action={async () => {
-              "use server";
-              await signOut();
-            }}
-          >
+          <form action={signOut}>
             <button
               type="submit"
               className="px-2.5 py-1 rounded-md hover:bg-paper-sunken hover:text-ink transition-colors no-tap-highlight"
