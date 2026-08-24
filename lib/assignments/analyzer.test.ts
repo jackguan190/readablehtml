@@ -160,8 +160,9 @@ describe("analyzeAssignmentBrief", () => {
       "Do not invent a rubric",
     );
     expect(ASSIGNMENT_ANALYSIS_SYSTEM_PROMPT).toContain("professor preference");
-    expect(provider.callStructured.mock.calls[0][0].systemPrompt).toBe(
-      ASSIGNMENT_ANALYSIS_SYSTEM_PROMPT,
-    );
+    const firstCall = provider.callStructured.mock.calls[0] as unknown as
+      | [{ systemPrompt: string }]
+      | undefined;
+    expect(firstCall?.[0].systemPrompt).toBe(ASSIGNMENT_ANALYSIS_SYSTEM_PROMPT);
   });
 });
