@@ -82,9 +82,59 @@ and the reading page becomes available at `/documents/<id>`.
 | `/auth/callback` | Email-confirmation redirect target |
 | `/dashboard` | Authenticated — list of your documents, upload entry point |
 | `/documents/[id]` | Authenticated — reading page backed by Supabase |
+| `/assignments` | Authenticated — Nebu.AI assignment list |
+| `/assignments/new` | Authenticated — create a course/assignment from pasted brief text |
+| `/assignments/[id]/requirements` | Authenticated — source-backed Assignment Understanding workspace |
 
 Unauthenticated requests to `/dashboard` or `/documents/*` are redirected to
 `/login?next=<original-path>` by `middleware.ts`.
+
+## Nebu.AI assignment understanding alpha
+
+Nebu.AI is the course-aware essay assistant slice in this repo. Phase 1 is
+text-first: a student creates an assignment from a pasted brief, runs AI
+analysis, and confirms/edits/rejects source-backed requirements.
+
+### Local requirements
+
+- Supabase CLI
+- A running container runtime supported by Supabase CLI, such as Docker Desktop
+- `OPENAI_API_KEY` in `.env.local` for platform AI analysis
+- `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+
+For a local Supabase stack:
+
+```bash
+npx supabase start
+npx supabase db reset
+```
+
+Then run the app:
+
+```bash
+npm run dev
+```
+
+Open `/assignments`, create a new assignment, then visit
+`/assignments/<id>/requirements`.
+
+### Operating notes
+
+- AI-proposed requirements stay **Proposed** until the student confirms them.
+- Required items must include an exact quote from the pasted brief.
+- Inference items are allowed, but they are not trusted context.
+- Missing rubrics never block progress and never let Nebu invent a hidden rubric;
+  the UI recommends adding rubric context later.
+- Analysis runs synchronously behind a persisted Supabase job. If a job fails,
+  the assignment brief is preserved and the user can retry. Retrying replaces
+  only AI Proposed requirements and does not delete confirmed/rejected decisions.
+
+### Phase 1 exclusions
+
+This alpha intentionally does not include file upload for course context,
+course insight generation, PDF evidence cards, general Nebu chat, an essay draft
+editor, citations, payment UI, vector search, production migration/deployment
+instructions, or Google Docs integration.
 
 ## Data model
 
