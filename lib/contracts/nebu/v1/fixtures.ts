@@ -1,0 +1,51 @@
+import type { AssignmentUnderstandingV1 } from "./requirement";
+
+export const assignmentUnderstandingFixture: AssignmentUnderstandingV1 = {
+  schemaVersion: 1,
+  assignmentId: "assignment-public-memory",
+  brief: {
+    schemaVersion: 1,
+    id: "brief-public-memory",
+    userId: "user-fixture",
+    courseId: "course-history",
+    assignmentId: "assignment-public-memory",
+    kind: "assignment_brief",
+    format: "text",
+    text: "Write a 1,500-word argument about public memory.",
+    createdAt: "2026-08-21T12:00:00.000Z",
+  },
+  rubricAvailable: false,
+  items: [
+    {
+      schemaVersion: 1,
+      id: "requirement-word-limit",
+      assignmentId: "assignment-public-memory",
+      kind: "word_limit",
+      text: "Write 1,500 words.",
+      reasoningClass: "required",
+      reviewStatus: "proposed",
+      origin: "ai",
+      studentEdited: false,
+      support: {
+        materialId: "brief-public-memory",
+        quote: "1,500-word",
+        start: 8,
+        end: 18,
+      },
+      orderIndex: 0,
+    },
+    {
+      schemaVersion: 1,
+      id: "ambiguity-public-memory-scope",
+      assignmentId: "assignment-public-memory",
+      kind: "ambiguity",
+      text: "The historical scope of public memory is not specified.",
+      reasoningClass: "inference",
+      reviewStatus: "proposed",
+      origin: "ai",
+      studentEdited: false,
+      support: null,
+      orderIndex: 1,
+    },
+  ],
+};
