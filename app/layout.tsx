@@ -15,9 +15,9 @@ const serif = Lora({
 });
 
 export const metadata: Metadata = {
-  title: "ReadableHTML — From scanned PDF to interactive study page",
+  title: "Nebu.AI — Course-aware essay workspace",
   description:
-    "Turn hard-to-read scanned academic PDFs into beautiful interactive HTML study pages.",
+    "Turn your course requirements, feedback, and notes into a stronger student-written essay.",
 };
 
 export default function RootLayout({

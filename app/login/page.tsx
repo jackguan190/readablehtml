@@ -8,7 +8,7 @@ export default function LoginPage({
 }: {
   searchParams: { next?: string; error?: string };
 }) {
-  const next = searchParams.next ?? "/dashboard";
+  const next = searchParams.next ?? "/onboarding";
   const errorParam = searchParams.error
     ? "Sign-in failed. Please try again."
     : null;
@@ -19,21 +19,21 @@ export default function LoginPage({
           href="/"
           className="block text-2xs uppercase tracking-eyebrow text-ink-faint hover:text-accent transition-colors mb-6 no-tap-highlight"
         >
-          ← ReadableHTML
+          ← Nebu.AI
         </Link>
         <div className="rounded-2xl border border-line bg-paper shadow-lift p-6 sm:p-8">
           <h1 className="font-serif text-[26px] tracking-tightish text-ink leading-tight">
             Welcome back.
           </h1>
           <p className="mt-1 text-[13px] text-ink-muted">
-            Log in to your study workspace.
+            Log in to your essay workspace.
           </p>
           <LoginForm next={next} initialError={errorParam} />
         </div>
         <p className="mt-5 text-center text-[13px] text-ink-muted">
           New here?{" "}
           <Link
-            href={`/signup${next !== "/dashboard" ? `?next=${encodeURIComponent(next)}` : ""}`}
+            href={`/signup?next=${encodeURIComponent(next)}`}
             className="text-accent font-medium hover:underline"
           >
             Create an account

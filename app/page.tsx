@@ -1,19 +1,26 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { HomeClient } from "./HomeClient";
+import { getAssignmentList } from "@/lib/assignments/queries";
+import { postAuthenticationPath } from "@/lib/nebu/navigation";
+import { redirect } from "next/navigation";
+import { NebuLanding } from "@/components/nebu/NebuLanding";
 
 export const dynamic = "force-dynamic";
 
 export default async function Page() {
-  let userEmail: string | null = null;
+  let supabase: ReturnType<typeof createSupabaseServerClient>;
+  let user: { id: string } | null;
+
   try {
-    const supabase = createSupabaseServerClient();
-    const {
+    supabase = createSupabaseServerClient();
+    ({
       data: { user },
-    } = await supabase.auth.getUser();
-    userEmail = user?.email ?? null;
+    } = await supabase.auth.getUser());
   } catch {
-    // Supabase env vars not set — render the marketing page in unauthenticated mode.
-    userEmail = null;
+    // Supabase env vars not set — render the public landing route.
+    return <NebuLanding />;
   }
-  return <HomeClient userEmail={userEmail} />;
+
+  if (!user) return <NebuLanding />;
+  const assignments = await getAssignmentList(supabase, user.id);
+  redirect(postAuthenticationPath(assignments.length));
 }
