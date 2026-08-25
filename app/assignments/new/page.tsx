@@ -55,7 +55,7 @@ export default async function NewAssignmentPage() {
         </section>
 
         <section className="mt-8 rounded-2xl border border-line bg-paper p-5 sm:p-7">
-          <AssignmentCreateForm courses={courses} />
+          <AssignmentCreateForm courses={courses} mode="library" />
         </section>
       </main>
     </div>

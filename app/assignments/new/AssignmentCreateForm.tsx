@@ -8,6 +8,7 @@ import type { CourseV1 } from "@/lib/contracts/nebu/v1";
 
 interface AssignmentCreateFormProps {
   courses: CourseV1[];
+  mode: "onboarding" | "library";
 }
 
 const INITIAL_STATE: CreateAssignmentFormState = {
@@ -33,7 +34,10 @@ function SubmitButton() {
   );
 }
 
-export function AssignmentCreateForm({ courses }: AssignmentCreateFormProps) {
+export function AssignmentCreateForm({
+  courses,
+  mode,
+}: AssignmentCreateFormProps) {
   const [state, formAction] = useFormState(
     createAssignmentAction,
     INITIAL_STATE,
@@ -55,7 +59,9 @@ export function AssignmentCreateForm({ courses }: AssignmentCreateFormProps) {
       )}
 
       <fieldset>
-        <legend className="text-[13px] font-semibold text-ink">Course</legend>
+        <legend className="text-[13px] font-semibold text-ink">
+          {mode === "onboarding" ? "Your course" : "Course"}
+        </legend>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <label className="rounded-xl border border-line bg-paper-raised p-3 text-[13px]">
             <input
@@ -144,7 +150,9 @@ export function AssignmentCreateForm({ courses }: AssignmentCreateFormProps) {
       </div>
 
       <label className={labelClass}>
-        Assignment brief
+        {mode === "onboarding"
+          ? "Paste your assignment requirements"
+          : "Assignment brief"}
         <textarea
           name="briefText"
           rows={12}
@@ -152,6 +160,12 @@ export function AssignmentCreateForm({ courses }: AssignmentCreateFormProps) {
           placeholder="Paste the assignment prompt, rubric language, or professor instructions here."
         />
         <FieldError message={state.fieldErrors.briefText} />
+        {mode === "onboarding" && (
+          <p className="mt-1.5 text-[12px] leading-5 text-ink-muted">
+            PDF, DOCX, and TXT upload will be added next. Paste the text for
+            now.
+          </p>
+        )}
       </label>
 
       <div className="flex flex-col gap-3 border-t border-line pt-5 sm:flex-row sm:items-center sm:justify-between">
