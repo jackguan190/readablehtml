@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 
-const PROTECTED_PREFIXES = ["/dashboard", "/documents"];
+const PROTECTED_PREFIXES = ["/onboarding", "/assignments", "/courses"];
 const AUTH_PAGES = ["/login", "/signup"];
 
 export async function updateSession(request: NextRequest) {
@@ -48,7 +48,7 @@ export async function updateSession(request: NextRequest) {
 
   if (isAuthPage && user) {
     const redirect = request.nextUrl.clone();
-    redirect.pathname = "/dashboard";
+    redirect.pathname = "/onboarding";
     redirect.search = "";
     return NextResponse.redirect(redirect);
   }

@@ -3,20 +3,16 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
+import { resolveNebuNext } from "@/lib/nebu/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 type ActionResult = { error: string } | { ok: true };
 
-function safeNext(input: FormDataEntryValue | null): string {
-  const v = typeof input === "string" ? input : "";
-  if (v.startsWith("/") && !v.startsWith("//")) return v;
-  return "/dashboard";
-}
-
 export async function signInWithPassword(formData: FormData): Promise<ActionResult> {
   const email = String(formData.get("email") ?? "").trim();
   const password = String(formData.get("password") ?? "");
-  const next = safeNext(formData.get("next"));
+  const rawNext = formData.get("next");
+  const next = resolveNebuNext(typeof rawNext === "string" ? rawNext : null);
 
   if (!email || !password) {
     return { error: "Email and password are required." };
@@ -33,7 +29,8 @@ export async function signInWithPassword(formData: FormData): Promise<ActionResu
 export async function signUpWithPassword(formData: FormData): Promise<ActionResult> {
   const email = String(formData.get("email") ?? "").trim();
   const password = String(formData.get("password") ?? "");
-  const next = safeNext(formData.get("next"));
+  const rawNext = formData.get("next");
+  const next = resolveNebuNext(typeof rawNext === "string" ? rawNext : null);
 
   if (!email || !password) {
     return { error: "Email and password are required." };
