@@ -10,3 +10,6 @@ tsconfig.tsbuildinfo
 
 # Local unrelated project
 myrlin-workbook/
+
+# Isolated local worktrees
+.worktrees/
